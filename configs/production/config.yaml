@@ -1,0 +1,27 @@
+app:
+  name: togather-feature-pipeline
+  env: production
+  debug: false
+
+kafka:
+  bootstrap_servers: kafka-prod:9092
+  consumer_group: feature-pipeline-prod
+  topics:
+    user_events: user.events
+    experience_events: experience.events
+    interactions: user.interactions
+
+redis:
+  host: redis-prod
+  port: 6379
+  db: 0
+  ttl: 86400
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  reload: false
+
+logging:
+  level: WARNING
+  format: json

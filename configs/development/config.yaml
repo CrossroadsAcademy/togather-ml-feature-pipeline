@@ -1,0 +1,27 @@
+app:
+  name: togather-feature-pipeline
+  env: development
+  debug: true
+
+kafka:
+  bootstrap_servers: localhost:9092
+  consumer_group: feature-pipeline-dev
+  topics:
+    user_events: user.events
+    experience_events: experience.events
+    interactions: user.interactions
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  ttl: 86400
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  reload: true
+
+logging:
+  level: DEBUG
+  format: json
