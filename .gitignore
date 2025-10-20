@@ -78,3 +78,6 @@ savepoints/
 # Build artifacts
 *.tar
 *.zip
+
+#Example test scripts
+examples/
