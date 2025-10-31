@@ -1,5 +1,6 @@
 
-FROM python:3.10-slim-bookworm
+# Build Dependencies - Compile time
+FROM python:3.10-slim-bookworm AS builder
 
 # Set work directory
 WORKDIR /app
@@ -17,7 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV POETRY_HOME="/opt/poetry"
 ENV PATH="$POETRY_HOME/bin:$PATH"
-
 RUN curl -sSL https://install.python-poetry.org | python3 - && \
     poetry --version
 
@@ -33,6 +33,15 @@ RUN poetry config virtualenvs.create false && \
 
 COPY src/ ./src
 COPY README.md .
+
+
+# Build - Runtime (clean and light)
+FROM python:3.10-slim-bookworm
+
+WORKDIR /app
+
+#Copy from builder
+COPY --from=builder /app /app
 
 
 # Environment variables
@@ -53,7 +62,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 
-# Switch to non-root user (optional)
+# Switch to non-root user
 
 RUN useradd -m appuser
 USER appuser
