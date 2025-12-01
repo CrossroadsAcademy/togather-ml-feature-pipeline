@@ -1,0 +1,20 @@
+apiVersion: skaffold/v4beta7
+kind: Config
+metadata:
+  name: feature-pipeline
+
+build:
+  local:
+    push: false
+  artifacts:
+    - image: togather-ml-feature-pipeline
+      context: .
+      docker:
+        dockerfile: Dockerfile
+manifests:
+  rawYaml:
+    - k8s/deployment.yaml
+    - k8s/service.yaml
+    - k8s/ingress.yaml
+deploy:
+  kubectl: {}
