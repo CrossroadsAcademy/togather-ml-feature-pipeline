@@ -20,6 +20,7 @@ opentelemetry-api = "^1.20.0"
 opentelemetry-sdk = "^1.20.0"
 opentelemetry-instrumentation-fastapi = "^0.41b0"
 opentelemetry-exporter-otlp = "^1.20.0"
+pyroscope-io = "^0.8.7"
 
 [tool.poetry.group.jvm.dependencies]
 # Web framework

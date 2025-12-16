@@ -652,7 +652,7 @@ version = "2.0.0"
 description = "Foreign Function Interface for Python calling C code."
 optional = false
 python-versions = ">=3.9"
-groups = ["jvm"]
+groups = ["main", "jvm"]
 files = [
     {file = "cffi-2.0.0-cp310-cp310-macosx_10_13_x86_64.whl", hash = "sha256:0cf2d91ecc3fcc0625c2c530fe004f82c110405f101548512cce44322fa8ac44"},
     {file = "cffi-2.0.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:f73b96c41e3b2adedc34a7356e64c8eb96e03a3782b535e043a986276ce12a49"},
@@ -3918,7 +3918,7 @@ version = "2.23"
 description = "C parser in Python"
 optional = false
 python-versions = ">=3.8"
-groups = ["jvm"]
+groups = ["main", "jvm"]
 markers = "implementation_name != \"PyPy\""
 files = [
     {file = "pycparser-2.23-py3-none-any.whl", hash = "sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934"},
@@ -4312,6 +4312,23 @@ files = [
 
 [package.extras]
 diagrams = ["jinja2", "railroad-diagrams"]
+
+[[package]]
+name = "pyroscope-io"
+version = "0.8.11"
+description = "Pyroscope Python integration"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "pyroscope_io-0.8.11-py2.py3-none-macosx_11_0_arm64.whl", hash = "sha256:644dbd81b162b6d678ef9989649bf936c62373fd7bba16fb6490272f453ff159"},
+    {file = "pyroscope_io-0.8.11-py2.py3-none-macosx_11_0_x86_64.whl", hash = "sha256:2df4cd4cbfb451c27cad20f905bf612ffc306a96820e316f7575c84433eadb24"},
+    {file = "pyroscope_io-0.8.11-py2.py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:50164c96cf5533ce795a114c6181c5d2aa162c9dae59277b6ac557820c411b7a"},
+    {file = "pyroscope_io-0.8.11-py2.py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a415072dd7e8964d66001fff2446d7426a505cfca1a89f3c912314537622a4cd"},
+]
+
+[package.dependencies]
+cffi = ">=1.6.0"
 
 [[package]]
 name = "pyspark"
@@ -6247,4 +6264,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "9f5013897ebd87151a99f48129abe471d6a974ccddfca654097a2ccd01e319b6"
+content-hash = "e9e22de797f9715dfa23a49938affd265c1f8206bd21d030be61e44c310e4f72"

@@ -1,5 +1,6 @@
 import os
 
+import pyroscope
 from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -32,6 +33,19 @@ otlp_exporter = OTLPSpanExporter(
 )
 trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(otlp_exporter))  # type: ignore[attr-defined]
 FastAPIInstrumentor.instrument_app(app)
+
+# Pyroscope Profiling
+
+pyroscope.configure(
+    application_name="feature-pipeline-service",
+    server_address=os.getenv(
+        "PYROSCOPE_SERVER_ADDRESS",
+        "http://pyroscope.observability.svc.cluster.local:4040",
+    ),
+    tags={
+        "environment": os.getenv("ENVIRONMENT", "dev"),
+    },
+)
 
 
 @app.get("/")
