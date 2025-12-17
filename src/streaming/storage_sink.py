@@ -208,7 +208,7 @@ class StorageSink:
             flat_records.append(flat)
 
         # Build columns from flattened records
-        all_keys = set()
+        all_keys: set[str] = set()
         for record in flat_records:
             all_keys.update(record.keys())
 
