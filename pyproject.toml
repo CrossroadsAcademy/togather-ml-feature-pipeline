@@ -21,6 +21,8 @@ opentelemetry-sdk = "^1.20.0"
 opentelemetry-instrumentation-fastapi = "^0.41b0"
 opentelemetry-exporter-otlp = "^1.20.0"
 pyroscope-io = "^0.8.7"
+# Data Version Control for dataset versioning
+dvc = {extras = ["s3"], version = "^3.55.0"}
 
 [tool.poetry.group.jvm.dependencies]
 # Web framework

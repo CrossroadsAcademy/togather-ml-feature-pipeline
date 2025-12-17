@@ -12,7 +12,13 @@ class KafkaSettings(BaseSettings):
     bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
     consumer_group: str = Field(default="app-events-consumer", alias="KAFKA_CONSUMER_GROUP")
     topics: list[str] = Field(
-        default=["user.account", "user.profile", "experience", "engagement", "location.streams"],
+        default=[
+            "user.account",
+            "user.profile",
+            "experience",
+            "engagement",
+            "location.streams",
+        ],
         alias="KAFKA_TOPICS",
     )
     auto_offset_reset: str = Field(default="latest", alias="KAFKA_AUTO_OFFSET_RESET")
@@ -100,7 +106,11 @@ class MetricsSettings(BaseSettings):
 class Settings(BaseSettings):
     """Application settings."""
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",  # Allow extra env vars without validation errors
+    )
 
     # Application
     app_env: Literal["development", "staging", "production"] = Field(

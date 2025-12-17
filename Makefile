@@ -46,3 +46,29 @@ docker-build:
 
 run-api:
 	poetry run uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+
+
+# DVC Commands (Data Version Control with MinIO)
+
+dvc-init: ## Initialize DVC (already done if .dvc/ exists)
+	@if [ ! -d ".dvc" ]; then poetry run dvc init; fi
+	@echo "DVC initialized"
+
+dvc-pull: ## Pull datasets from MinIO (dvc-data bucket)
+	@poetry run dvc pull
+	@echo "Datasets pulled from MinIO (dvc-data)"
+
+dvc-push: ## Push datasets to MinIO (dvc-data bucket)
+	@poetry run dvc push
+	@echo "Datasets pushed to MinIO (dvc-data)"
+
+dvc-status: ## Check DVC status
+	@poetry run dvc status
+
+dvc-add: ## Add data files to DVC tracking (usage: make dvc-add FILE=data/myfile.parquet)
+	@poetry run dvc add $(FILE)
+	@echo "Added $(FILE) to DVC tracking"
+
+dvc-gc: ## Garbage collect unused cache
+	@poetry run dvc gc --workspace -f
+	@echo "DVC cache cleaned"
