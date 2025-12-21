@@ -203,8 +203,9 @@ class EventRouter(KeyedProcessFunction):
             return [value]
         else:
             # Track invalid events
-            current_count = self._invalid_count_state.value() or 0
-            self._invalid_count_state.update(current_count + 1)
+            if self._invalid_count_state is not None:
+                current_count = self._invalid_count_state.value() or 0
+                self._invalid_count_state.update(current_count + 1)
 
             print(
                 f"Warning: Invalid event for user {ctx.get_current_key()}: {result.error_message}"

@@ -241,7 +241,7 @@ class RedisSink:
             if self._client is None:
                 return None
             embedding_str = self._client.get(key)
-            if embedding_str:
+            if embedding_str and isinstance(embedding_str, str):
                 return [float(v) for v in embedding_str.split(",")]
             return None
         except redis.RedisError as e:
@@ -255,7 +255,7 @@ class RedisSink:
 
         key = f"{self.config.key_prefix}:{user_id}:{session_id}"
         result = self._client.delete(key)
-        return int(result) > 0
+        return bool(result)
 
     def close(self) -> None:
         """Close Redis connection."""

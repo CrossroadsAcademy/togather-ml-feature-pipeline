@@ -164,7 +164,10 @@ class SchemaRegistryClient:
             ).inc()
 
             if response.status_code == 200:
-                return response.json().get("id")
+                result = response.json().get("id")
+                if result is not None:
+                    return int(result)
+                return None
             else:
                 response.raise_for_status()
 
@@ -216,7 +219,7 @@ class ProtobufSerializer:
 
             # Create Confluent wire format: magic byte + schema ID + message
             header = struct.pack(">bI", MAGIC_BYTE, schema_id)
-            result = header + message_bytes
+            result: bytes = header + message_bytes
 
             protobuf_serialization.labels(operation="serialize", status="success").inc()
 
@@ -264,7 +267,7 @@ class ProtobufDeserializer:
             self.logger.warning(f"Invalid magic byte: {data[0]}, expected {MAGIC_BYTE}")
             return None
 
-        schema_id = struct.unpack(">I", data[1:5])[0]
+        schema_id: int = struct.unpack(">I", data[1:5])[0]
         return schema_id
 
     def deserialize(
