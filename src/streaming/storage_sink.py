@@ -155,7 +155,6 @@ class StorageSink:
         Args:
             event_type: Type of event (user_click, db_change, etc.)
             timestamp: Event timestamp
-            table_name: Optional table name for CDC events
 
         Returns:
             Hive-style partition path (e.g., event_type=user_click/year=2024/month=12/day=15/hour=10)
@@ -262,7 +261,7 @@ class StorageSink:
             # Write to Parquet buffer
             buffer = BytesIO()
             compression = None if self.config.compression == "none" else self.config.compression
-            pq.write_table(table, buffer, compression=compression)
+            pq.write_table(table, buffer, compression=compression)  # type: ignore
             buffer.seek(0)
             file_size = buffer.getbuffer().nbytes
 

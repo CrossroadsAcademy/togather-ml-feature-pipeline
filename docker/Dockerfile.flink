@@ -1,0 +1,70 @@
+# PyFlink Session Feature Job Dockerfile
+#
+# Custom Flink image with Python dependencies for session aggregation
+#
+# Build:
+#   docker build -t togather/flink-feature-job:v1 -f docker/Dockerfile.flink .
+#
+# Push to registry:
+#   docker push your-registry/flink-feature-job:v1
+
+FROM flink:1.19-java11
+
+# Install Python, pip, and JDK for pemja build
+USER root
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-dev \
+    openjdk-11-jdk-headless \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Java home for pemja build
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
+# Fallback for x86
+RUN if [ ! -d "$JAVA_HOME" ]; then \
+    export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64; \
+    fi
+
+# Download Kafka connector JARs (required for KafkaSource)
+# These must be in the Flink lib directory
+RUN curl -L -o /opt/flink/lib/flink-connector-kafka-3.2.0-1.19.jar \
+    https://repo1.maven.org/maven2/org/apache/flink/flink-connector-kafka/3.2.0-1.19/flink-connector-kafka-3.2.0-1.19.jar && \
+    curl -L -o /opt/flink/lib/kafka-clients-3.6.1.jar \
+    https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.6.1/kafka-clients-3.6.1.jar
+
+# Install S3 filesystem plugin for checkpoint storage
+# The plugin must be in the plugins directory (not lib)
+RUN mkdir -p /opt/flink/plugins/s3-fs-hadoop && \
+    curl -L -o /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-1.19.1.jar \
+    https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.19.1/flink-s3-fs-hadoop-1.19.1.jar
+
+# Set Python3 as default
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Install Python dependencies
+COPY docker/requirements-flink.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy application code
+WORKDIR /opt/flink/app
+COPY src/flink /opt/flink/app/src/flink
+COPY src/streaming /opt/flink/app/src/streaming
+COPY src/utils /opt/flink/app/src/utils
+
+# Create empty __init__.py files to make packages importable
+RUN touch /opt/flink/app/src/__init__.py
+
+# Set PYTHONPATH
+ENV PYTHONPATH=/opt/flink/app
+
+# Ensure flink user owns everything and can write to temp
+RUN chown -R flink:flink /opt/flink && \
+    chmod -R 755 /opt/flink/lib
+
+# Switch back to flink user
+USER flink
+
+# Default command
+CMD ["help"]

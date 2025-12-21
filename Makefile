@@ -48,6 +48,29 @@ run-api:
 	poetry run uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 
 
+
+# Flink Docker Image (for PyFlink session job)
+
+FLINK_IMAGE ?= togather-ml/flink-feature-job
+FLINK_TAG ?= latest
+
+flink-build: ## Build PyFlink session job Docker image
+	docker build -t $(FLINK_IMAGE):$(FLINK_TAG) -f docker/Dockerfile.flink .
+	@echo "Built $(FLINK_IMAGE):$(FLINK_TAG)"
+
+flink-push: ## Push Flink image to registry (set FLINK_IMAGE for your registry)
+	docker push $(FLINK_IMAGE):$(FLINK_TAG)
+	@echo "Pushed $(FLINK_IMAGE):$(FLINK_TAG)"
+
+flink-deploy: ## Deploy Flink job to Kubernetes
+	kubectl apply -f k8s/flink-feature-job.yaml -n stream-processing
+	@echo "Deployed Flink feature job"
+
+flink-logs: ## View Flink job logs
+	kubectl logs -l app=flink-feature-job -n stream-processing --tail=100 -f
+
+
+
 # DVC Commands (Data Version Control with MinIO)
 
 dvc-init: ## Initialize DVC (already done if .dvc/ exists)

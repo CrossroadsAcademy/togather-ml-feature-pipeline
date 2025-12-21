@@ -564,7 +564,7 @@ async def main():
     config = KafkaConsumerConfig(
         bootstrap_servers=settings.kafka.bootstrap_servers,
         consumer_group=settings.kafka.consumer_group,
-        topics=settings.kafka.topics,
+        topics=settings.kafka.topics_list,
         dlq_topic=settings.kafka.dlq_topic,
     )
 

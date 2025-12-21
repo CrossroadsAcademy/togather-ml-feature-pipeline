@@ -17,11 +17,13 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
+        pyroscope.io/scrape: "true"
+        pyroscope.io/port: "8000"
     spec:
       containers:
         - name: feature-pipeline
           image: togather-ml-feature-pipeline
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never  # Locally built image
           ports:
             - containerPort: 8000
           env:
