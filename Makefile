@@ -58,7 +58,7 @@ flink-build: ## Build PyFlink session job Docker image
 	docker build -t $(FLINK_IMAGE):$(FLINK_TAG) -f docker/Dockerfile.flink .
 	@echo "Built $(FLINK_IMAGE):$(FLINK_TAG)"
 
-flink-push: ## Push Flink image to registry (set FLINK_IMAGE for your registry)
+flink-push: ## Push Flink image to registry (set FLINK_IMAGE for registry)
 	docker push $(FLINK_IMAGE):$(FLINK_TAG)
 	@echo "Pushed $(FLINK_IMAGE):$(FLINK_TAG)"
 

@@ -6,12 +6,16 @@ metadata:
 build:
   local:
     push: false
-    useBuildkit: true
+    useBuildkit: false
   artifacts:
     - image: togather-ml-feature-pipeline
       context: .
       docker:
         dockerfile: Dockerfile
+    - image: togather-ml/flink-feature-job
+      context: .
+      docker:
+        dockerfile: docker/Dockerfile.flink
 manifests:
   rawYaml:
     - k8s/deployment.yaml
