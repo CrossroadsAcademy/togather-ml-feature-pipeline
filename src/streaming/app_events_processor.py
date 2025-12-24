@@ -1,18 +1,14 @@
-"""Enhanced app events processor with schema validation and S3 archiving."""
-
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
 from src.streaming.kafka_consumer import EventProcessor, NonRetryableException
-from src.streaming.minio_sink import DataArchiver as MinIODataArchiver
-from src.streaming.minio_sink import MinIOSink
-from src.streaming.s3_sink import DataArchiver, S3Sink
-from src.streaming.schema_registry import (
+from src.streaming.schema_registry import (  # type: ignore[attr-defined]
     MessageValidator,
     ProtobufDeserializer,
     SchemaRegistryClient,
 )
+from src.streaming.storage_sink import DataArchiver, StorageSink
 from src.utils.config import settings
 from src.utils.logger import get_logger
 
@@ -68,40 +64,31 @@ class AppEventsProcessor(EventProcessor):
             # Message validator
             self.validator = MessageValidator(self.schema_registry_client)
 
-            # Storage sink for archiving (MinIO preferred, S3 fallback)
-            self.storage_sink: MinIOSink | S3Sink | None = None
-            self.archiver: MinIODataArchiver | DataArchiver | None = None
+            # Unified storage sink
+            self.storage_sink: StorageSink | None = None
+            self.archiver: DataArchiver | None = None
             self.storage_enabled = False
 
-            # Try MinIO first (preferred for local development)
             try:
-                self.storage_sink = MinIOSink()
-                self.archiver = MinIODataArchiver(self.storage_sink, batch_size=1000)
+                self.storage_sink = StorageSink()
+                self.archiver = DataArchiver(self.storage_sink, batch_size=1000)
                 self.storage_enabled = True
-                self.storage_type = "minio"
-                self.logger.info("MinIO sink initialized successfully")
-            except Exception as minio_error:
-                self.logger.warning(f"MinIO sink initialization failed: {minio_error}")
-
-                # Fallback to S3
-                try:
-                    self.storage_sink = S3Sink()
-                    self.archiver = DataArchiver(self.storage_sink, batch_size=1000)
-                    self.storage_enabled = True
-                    self.storage_type = "s3"
-                    self.logger.info("S3 sink initialized successfully (MinIO fallback)")
-                except Exception as s3_error:
-                    self.logger.warning(f"S3 sink initialization failed: {s3_error}")
-                    self.logger.warning(
-                        "Continuing without storage archiving - messages will be processed but not archived"
-                    )
-                    self.storage_sink = None
-                    self.archiver = None
-                    self.storage_enabled = False
-                    self.storage_type = "none"
+                self.logger.info(
+                    "Storage sink initialized",
+                    endpoint=self.storage_sink.config.endpoint,
+                    bucket=self.storage_sink.config.bucket_name,
+                )
+            except Exception as storage_error:
+                self.logger.warning(f"Storage sink initialization failed: {storage_error}")
+                self.logger.warning(
+                    "Continuing without storage archiving - messages will be processed but not archived"
+                )
+                self.storage_sink = None
+                self.archiver = None
+                self.storage_enabled = False
 
             # Message deduplication for idempotent processing
-            self.processed_messages: set[str] = set()  # Simple in-memory deduplication
+            self.processed_messages: set[str] = set()  # in-memory deduplication
             self.max_dedup_cache_size = 10000  # Prevent memory leaks
 
             self.logger.info("App events processor components initialized successfully")
@@ -119,10 +106,10 @@ class AppEventsProcessor(EventProcessor):
             topic: Kafka topic name
         """
         try:
-            # Create message ID for deduplication (best practice for idempotent processing)
+            # Create message ID for deduplication for idempotent processing
             message_id = self._create_message_id(message, topic)
 
-            # Check for duplicate messages (idempotent processing)
+            # Check for duplicate messages for idempotent processing
             if self._is_duplicate_message(message_id):
                 self.logger.info(
                     "Duplicate message detected, skipping processing",
@@ -152,10 +139,10 @@ class AppEventsProcessor(EventProcessor):
             # Mark message as processed (idempotent processing)
             self._mark_message_processed(message_id)
 
-            # Add to buffer for batch archiving (only if storage is enabled)
+            # Add to buffer for batch archiving
             if self.storage_enabled:
                 self.message_buffer.append(enriched_message)
-                # Check if we should archive
+                # Check if should archive
                 await self._check_and_archive()
 
             self.logger.info(
@@ -173,7 +160,6 @@ class AppEventsProcessor(EventProcessor):
     def _create_message_id(self, message: dict[str, Any], topic: str) -> str:
         """Create a unique message ID for deduplication."""
         # Use topic, partition, offset, and timestamp for unique ID
-        # In a real implementation, you might use a hash of the message content
         import hashlib
 
         message_key = f"{topic}:{message.get('partition', 'unknown')}:{message.get('offset', 'unknown')}:{message.get('timestamp', datetime.now(timezone.utc).timestamp())}"
@@ -189,7 +175,7 @@ class AppEventsProcessor(EventProcessor):
 
         # Prevent memory leaks by limiting cache size
         if len(self.processed_messages) > self.max_dedup_cache_size:
-            # Remove oldest entries (simple FIFO)
+            # Remove oldest entries
             oldest_messages = list(self.processed_messages)[:1000]  # Remove 1000 oldest
             self.processed_messages = self.processed_messages - set(oldest_messages)
 

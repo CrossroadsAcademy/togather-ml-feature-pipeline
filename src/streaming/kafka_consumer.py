@@ -10,7 +10,12 @@ from unittest.mock import Mock
 from confluent_kafka import Consumer, KafkaError, Message, TopicPartition
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from pydantic import BaseModel, Field
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from src.utils.config import settings
 from src.utils.logger import get_logger, setup_logging
@@ -19,17 +24,23 @@ logger = get_logger(__name__)
 
 # Prometheus Metrics
 messages_consumed_total = Counter(
-    "kafka_messages_consumed_total", "Total number of messages consumed", ["topic", "status"]
+    "kafka_messages_consumed_total",
+    "Total number of messages consumed",
+    ["topic", "status"],
 )
 
 messages_processing_duration = Histogram(
-    "kafka_message_processing_duration_seconds", "Time spent processing messages", ["topic"]
+    "kafka_message_processing_duration_seconds",
+    "Time spent processing messages",
+    ["topic"],
 )
 
 consumer_lag = Gauge("kafka_consumer_lag", "Consumer lag per partition", ["topic", "partition"])
 
 dlq_messages_total = Counter(
-    "kafka_dlq_messages_total", "Total messages sent to dead letter queue", ["topic", "reason"]
+    "kafka_dlq_messages_total",
+    "Total messages sent to dead letter queue",
+    ["topic", "reason"],
 )
 
 
@@ -93,13 +104,29 @@ class KafkaConsumerConfig(BaseModel):
     sasl_username: str | None = Field(default=None, description="SASL username")
     sasl_password: str | None = Field(default=None, description="SASL password")
     ssl_ca_location: str | None = Field(default=None, description="SSL CA location")
+    # SSL/TLS fields for external Kafka (KRaft mode)
+    ssl_keystore_location: str | None = Field(
+        default=None, description="SSL keystore location (JKS format)"
+    )
+    ssl_keystore_password: str | None = Field(default=None, description="SSL keystore password")
+    ssl_truststore_location: str | None = Field(
+        default=None, description="SSL truststore location (JKS format)"
+    )
+    ssl_truststore_password: str | None = Field(default=None, description="SSL truststore password")
+    ssl_key_password: str | None = Field(
+        default=None,
+        description="SSL key password (if different from keystore password)",
+    )
 
 
 class KafkaConsumer:
     """Production-ready Kafka consumer with retry patterns and observability."""
 
     def __init__(
-        self, config: KafkaConsumerConfig, processor: EventProcessor, metrics_port: int = 8080
+        self,
+        config: KafkaConsumerConfig,
+        processor: EventProcessor,
+        metrics_port: int = 8080,
     ):
         self.config = config
         self.processor = processor
@@ -144,6 +171,18 @@ class KafkaConsumer:
         # Add SSL configuration if provided
         if self.config.ssl_ca_location:
             consumer_config["ssl.ca.location"] = self.config.ssl_ca_location
+
+        # Add SSL keystore/truststore for external Kafka (KRaft mode with SSL)
+        if self.config.ssl_keystore_location:
+            consumer_config["ssl.keystore.location"] = self.config.ssl_keystore_location
+        if self.config.ssl_keystore_password:
+            consumer_config["ssl.keystore.password"] = self.config.ssl_keystore_password
+        if self.config.ssl_truststore_location:
+            consumer_config["ssl.truststore.location"] = self.config.ssl_truststore_location
+        if self.config.ssl_truststore_password:
+            consumer_config["ssl.truststore.password"] = self.config.ssl_truststore_password
+        if self.config.ssl_key_password:
+            consumer_config["ssl.key.password"] = self.config.ssl_key_password
 
         consumer = Consumer(**consumer_config)
         consumer.subscribe(self.config.topics)
@@ -207,27 +246,39 @@ class KafkaConsumer:
             return
 
     def _parse_message(self, message: Message) -> dict[str, Any]:
-        """Parse Kafka message. For mocks, return only value payload."""
+        """
+        Parse Kafka message with Protobuf or JSON support.
+
+        Attempts Protobuf deserialization first (Confluent wire format),
+        falls back to JSON if no magic byte is present.
+        """
         try:
             raw_value = message.value()
             if not raw_value:
                 return {}
 
+            # Check for Confluent wire format (Protobuf)
+            # Magic byte = 0, followed by 4-byte schema ID
+            if len(raw_value) >= 5 and raw_value[0] == 0:
+                # Protobuf message with Schema Registry
+                return self._parse_protobuf_message(raw_value, message)
+
+            # Fallback to JSON
             try:
                 msg_data = cast(dict[str, Any], json.loads(raw_value.decode("utf-8")))
             except Exception:
-                msg_data = {"raw_value": raw_value}
+                msg_data = {"raw_value": raw_value.hex()}
 
-            #  If it's a unittest.Mock message, skip metadata
+            # If it's a unittest.Mock message, skip metadata
             if isinstance(message, Mock):
                 return msg_data
 
-            #  Only real Kafka messages get metadata
+            # Only real Kafka messages get metadata
             msg_data.update(
                 {
                     "partition": message.partition(),
                     "offset": message.offset(),
-                    "timestamp": message.timestamp()[1] if message.timestamp() else None,
+                    "timestamp": (message.timestamp()[1] if message.timestamp() else None),
                     "key": message.key().decode("utf-8") if message.key() else None,
                 }
             )
@@ -236,6 +287,77 @@ class KafkaConsumer:
         except Exception as e:
             self.logger.error("Error parsing message", error=str(e))
             return {"raw_value": message.value(), "parse_error": str(e)}
+
+    def _parse_protobuf_message(self, raw_value: bytes, message: Message) -> dict[str, Any]:
+        """
+        Parse Protobuf message using Schema Registry.
+
+        Uses the ProtobufDeserializer with registered message types.
+        """
+        import struct
+
+        try:
+            # Extract schema ID from Confluent wire format
+            schema_id = struct.unpack(">I", raw_value[1:5])[0]
+            message_bytes = raw_value[5:]
+
+            # Get topic for subject lookup
+            topic = "test-topic" if isinstance(message, Mock) else message.topic()
+            subject = f"{topic}-value"  # noqa: F841
+
+            # Try to deserialize using registered message type
+            # Import here to avoid circular imports
+            from src.streaming.schema_registry import (
+                ProtobufDeserializer,
+                SchemaRegistryClient,
+                get_value_subject,
+            )
+
+            # Get schema registry URL from settings
+            from src.utils.config import settings
+
+            schema_registry_url = getattr(
+                settings,
+                "schema_registry_url",
+                "http://schema-registry.platform.svc.cluster.local:8081",
+            )
+
+            sr_client = SchemaRegistryClient(schema_registry_url)
+            deserializer = ProtobufDeserializer(sr_client)
+
+            # Attempt deserialization
+            result, error = deserializer.deserialize_to_dict(raw_value, get_value_subject(topic))
+
+            if error:
+                self.logger.warning(f"Protobuf deserialization failed: {error}")
+                return {
+                    "schema_id": schema_id,
+                    "raw_payload": message_bytes.hex(),
+                    "parse_error": error,
+                }
+
+            msg_data = result or {}
+
+            # Add Kafka metadata
+            if not isinstance(message, Mock):
+                msg_data.update(
+                    {
+                        "partition": message.partition(),
+                        "offset": message.offset(),
+                        "timestamp": (message.timestamp()[1] if message.timestamp() else None),
+                        "key": message.key().decode("utf-8") if message.key() else None,
+                        "_schema_id": schema_id,
+                    }
+                )
+
+            return msg_data
+
+        except Exception as e:
+            self.logger.error(f"Protobuf parsing error: {e}", exc_info=True)
+            return {
+                "raw_payload": (raw_value[5:].hex() if len(raw_value) > 5 else raw_value.hex()),
+                "parse_error": str(e),
+            }
 
     async def _send_to_dlq(self, message: Message, topic: str, error_reason: str) -> None:
         """Send message to dead letter queue."""
@@ -422,10 +544,27 @@ class AppEventsProcessor:
 
 async def main():
     """Main entry point for the Kafka consumer."""
+    import os
+
+    import pyroscope
+
+    # Configure Pyroscope profiling
+    pyroscope.configure(
+        application_name="feature-pipeline-kafka-consumer",
+        server_address=os.getenv(
+            "PYROSCOPE_SERVER_ADDRESS",
+            "http://pyroscope.observability.svc.cluster.local:4040",
+        ),
+        tags={
+            "environment": os.getenv("ENVIRONMENT", "dev"),
+            "component": "kafka-consumer",
+        },
+    )
+
     config = KafkaConsumerConfig(
         bootstrap_servers=settings.kafka.bootstrap_servers,
         consumer_group=settings.kafka.consumer_group,
-        topics=settings.kafka.topics,
+        topics=settings.kafka.topics_list,
         dlq_topic=settings.kafka.dlq_topic,
     )
 

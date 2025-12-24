@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feature-pipeline
+  labels:
+    app: feature-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: feature-pipeline
+  template:
+    metadata:
+      labels:
+        app: feature-pipeline
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+        pyroscope.io/scrape: "true"
+        pyroscope.io/port: "8000"
+    spec:
+      containers:
+        - name: feature-pipeline
+          image: togather-ml-feature-pipeline
+          imagePullPolicy: Never  # Locally built image
+          ports:
+            - containerPort: 8000
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "togather-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092"
+            - name: SCHEMA_REGISTRY_URL
+              value: "http://schema-registry:8081"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"

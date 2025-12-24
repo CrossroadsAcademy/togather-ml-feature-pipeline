@@ -25,14 +25,13 @@ RUN curl -sSL https://install.python-poetry.org | python3 - && \
 # Dependency install (cached)
 
 COPY pyproject.toml poetry.lock* ./
-RUN poetry config virtualenvs.create false && \
+RUN poetry config virtualenvs.in-project true && \
     poetry install --no-interaction --no-ansi --no-root --without dev,jvm
 
 
 # Copy application code
 
 COPY src/ ./src
-COPY README.md .
 
 
 # Build - Runtime (clean and light)
@@ -47,6 +46,8 @@ COPY --from=builder /app /app
 # Environment variables
 
 ENV PYTHONUNBUFFERED=1
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ENV PYTHONPATH=/app/src
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
 
@@ -70,4 +71,4 @@ USER appuser
 
 # Default command
 
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/.venv/bin/uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

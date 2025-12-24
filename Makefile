@@ -46,3 +46,52 @@ docker-build:
 
 run-api:
 	poetry run uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+
+
+
+# Flink Docker Image (for PyFlink session job)
+
+FLINK_IMAGE ?= togather-ml/flink-feature-job
+FLINK_TAG ?= latest
+
+flink-build: ## Build PyFlink session job Docker image
+	docker build -t $(FLINK_IMAGE):$(FLINK_TAG) -f docker/Dockerfile.flink .
+	@echo "Built $(FLINK_IMAGE):$(FLINK_TAG)"
+
+flink-push: ## Push Flink image to registry (set FLINK_IMAGE for registry)
+	docker push $(FLINK_IMAGE):$(FLINK_TAG)
+	@echo "Pushed $(FLINK_IMAGE):$(FLINK_TAG)"
+
+flink-deploy: ## Deploy Flink job to Kubernetes
+	kubectl apply -f k8s/flink-feature-job.yaml -n stream-processing
+	@echo "Deployed Flink feature job"
+
+flink-logs: ## View Flink job logs
+	kubectl logs -l app=flink-feature-job -n stream-processing --tail=100 -f
+
+
+
+# DVC Commands (Data Version Control with MinIO)
+
+dvc-init: ## Initialize DVC (already done if .dvc/ exists)
+	@if [ ! -d ".dvc" ]; then poetry run dvc init; fi
+	@echo "DVC initialized"
+
+dvc-pull: ## Pull datasets from MinIO (dvc-data bucket)
+	@poetry run dvc pull
+	@echo "Datasets pulled from MinIO (dvc-data)"
+
+dvc-push: ## Push datasets to MinIO (dvc-data bucket)
+	@poetry run dvc push
+	@echo "Datasets pushed to MinIO (dvc-data)"
+
+dvc-status: ## Check DVC status
+	@poetry run dvc status
+
+dvc-add: ## Add data files to DVC tracking (usage: make dvc-add FILE=data/myfile.parquet)
+	@poetry run dvc add $(FILE)
+	@echo "Added $(FILE) to DVC tracking"
+
+dvc-gc: ## Garbage collect unused cache
+	@poetry run dvc gc --workspace -f
+	@echo "DVC cache cleaned"

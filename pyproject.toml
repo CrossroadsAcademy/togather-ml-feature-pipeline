@@ -9,8 +9,22 @@ packages = [{include = "src"}]
 [tool.poetry.dependencies]
 python = "^3.10"
 kafka-python = "^2.2.15"
+feast = "^0.37.0"
+s3fs = ">=2023.1.0"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+# Monitoring & Observability
+prometheus-client = "^0.19.0"
+prometheus-fastapi-instrumentator = "^7.0.0"
+opentelemetry-api = "^1.20.0"
+opentelemetry-sdk = "^1.20.0"
+opentelemetry-instrumentation-fastapi = "^0.41b0"
+opentelemetry-exporter-otlp = "^1.20.0"
+pyroscope-io = "^0.8.7"
+# Data Version Control for dataset versioning
+dvc = {extras = ["s3"], version = "^3.55.0"}
+
 [tool.poetry.group.jvm.dependencies]
-pemja = "^0.5.0"
 # Web framework
 fastapi = "^0.109.0"
 uvicorn = {extras = ["standard"], version = "^0.27.0"}
@@ -28,7 +42,7 @@ minio = "^7.2.0"
 
 # Schema Registry & Protobuf
 confluent-kafka = "^2.3.0"
-protobuf = "^3.20.3"  # Compatible version for schema registry
+protobuf = "^4.24.0"  # Updated for Feast compatibility
 
 # Config & validation
 pydantic = "^2.5.0"
@@ -38,8 +52,6 @@ python-dotenv = "^1.0.0"
 structlog = "^23.2.0"
 python-json-logger = "^2.0.7"
 
-# Monitoring & Observability
-prometheus-client = "^0.19.0"
 
 # Retry & Circuit Breaker
 tenacity = "^8.2.3"
@@ -115,10 +127,16 @@ warn_unused_configs = true
 ignore_missing_imports = true
 disallow_untyped_defs = false  # Start permissive, tighten later
 check_untyped_defs = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+
 
 [[tool.mypy.overrides]]
 module = ["pyspark.*", "pyflink.*", "kafka.*"]
 ignore_missing_imports = true
+
+
 
 [tool.pytest.ini_options]
 minversion = "7.0"
