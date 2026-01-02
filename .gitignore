@@ -20,6 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+scripts/test_flink_session_job.py
 
 # Virtual environments
 venv/
