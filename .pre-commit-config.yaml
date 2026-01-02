@@ -1,8 +1,9 @@
-# Pre-commit hooks - runs before every commit
+# Pre-commit hooks
 # Install: poetry run pre-commit install
 # Run manually: poetry run pre-commit run --all-files
+
 repos:
-  # General file checks
+  # General file sanity checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
@@ -12,9 +13,10 @@ repos:
         name: Fix end of files
       - id: check-yaml
         name: Check YAML syntax
+        args: ["--allow-multiple-documents"]
       - id: check-added-large-files
         name: Prevent large files
-        args: ['--maxkb=500']
+        args: ["--maxkb=500"]
       - id: check-merge-conflict
         name: Check for merge conflicts
       - id: check-toml
@@ -22,22 +24,18 @@ repos:
       - id: debug-statements
         name: Check for debugger statements
 
-  # Python formatting
-  - repo: https://github.com/psf/black
-    rev: 23.12.0
-    hooks:
-      - id: black
-        name: Format code with Black
-
-  # Python linting
+  # Python formatting & linting
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.1.14
     hooks:
+      # Linting (may auto-fix, but does NOT fail commit)
       - id: ruff
         name: Lint with Ruff
-        args: [--fix, --exit-non-zero-on-fix]
+        args: ["--fix"]
+
+      # Formatting (Black-compatible, stable)
       - id: ruff-format
-        name: Format imports with Ruff
+        name: Format code with Ruff
 
   # Commit message linting
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
@@ -46,4 +44,5 @@ repos:
       - id: commitlint
         name: Check commit message format
         stages: [commit-msg]
-        additional_dependencies: ['@commitlint/config-conventional']
+        additional_dependencies:
+          - "@commitlint/config-conventional"

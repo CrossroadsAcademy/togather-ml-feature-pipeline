@@ -1,0 +1,26 @@
+# ClusterRole for Spark Operator Access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-application-manager
+rules:
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications", "sparkapplications/status"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+# ClusterRoleBinding for Kubeflow Pipeline Runner
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubeflow-spark-access
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner
+    namespace: kubeflow
+  - kind: ServiceAccount
+    name: default-editor
+    namespace: kubeflow
+roleRef:
+  kind: ClusterRole
+  name: spark-application-manager
+  apiGroup: rbac.authorization.k8s.io

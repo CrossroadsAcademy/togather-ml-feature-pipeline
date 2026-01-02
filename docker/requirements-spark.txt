@@ -1,0 +1,26 @@
+# =============================================================================
+# Python Dependencies for Spark Batch Pipeline
+# =============================================================================
+# This file is used for Docker layer caching - dependencies are installed
+# before source code is copied, so code changes don't trigger reinstalls.
+# =============================================================================
+
+# Core utilities
+structlog
+pydantic
+pydantic-settings
+
+# Monitoring & Observability
+prometheus-client
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+
+# Storage & Data
+redis
+minio
+s3fs
+pyarrow
+
+# Feature Store
+feast

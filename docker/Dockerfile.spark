@@ -1,0 +1,49 @@
+# =============================================================================
+# Spark Batch Job Docker Image
+# =============================================================================
+# Based on official Spark image with Python dependencies for batch processing
+# Includes hadoop-aws for S3A/MinIO filesystem support
+# =============================================================================
+
+FROM spark:3.5.3-scala2.12-java17-python3-ubuntu
+
+USER root
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download hadoop-aws and aws-java-sdk-bundle JARs for S3A filesystem
+RUN curl -L -o /opt/spark/jars/hadoop-aws-3.3.4.jar \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -L -o /opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar \
+    https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar
+
+# Set working directory
+WORKDIR /opt/spark/work-dir
+
+# =============================================================================
+# LAYER CACHING OPTIMIZATION
+# =============================================================================
+# Copy dependency file first - this layer is cached unless requirements.txt changes
+# This means code changes WON'T trigger dependency reinstallation!
+# =============================================================================
+COPY docker/requirements-spark.txt /tmp/requirements-spark.txt
+
+# Install Python dependencies (cached unless requirements.txt changes)
+RUN pip3 install --no-cache-dir -r /tmp/requirements-spark.txt
+
+# =============================================================================
+# Copy source code LAST (changes frequently, but doesn't invalidate deps layer)
+# =============================================================================
+COPY src/ ./src/
+COPY feast_repo/ ./feast_repo/
+
+# Set Python path
+ENV PYTHONPATH=/opt/spark/work-dir:/opt/spark/work-dir/src
+
+# Switch back to spark user for security
+USER 185
+
+# Default entrypoint is handled by Spark

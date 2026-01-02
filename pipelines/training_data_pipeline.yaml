@@ -1,0 +1,223 @@
+# PIPELINE DEFINITION
+# Name: training-data-pipeline
+# Description: Generate Two-Tower and Ranking training data from features
+# Inputs:
+#    output_bucket: str [Default: 'dvc-data']
+#    target_date: str [Default: '']
+components:
+  comp-submit-training-data-job:
+    executorLabel: exec-submit-training-data-job
+    inputDefinitions:
+      parameters:
+        feature_bucket:
+          defaultValue: raw-events
+          isOptional: true
+          parameterType: STRING
+        namespace:
+          defaultValue: default
+          isOptional: true
+          parameterType: STRING
+        output_bucket:
+          defaultValue: dvc-data
+          isOptional: true
+          parameterType: STRING
+        target_date:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-wait-for-spark-job:
+    executorLabel: exec-wait-for-spark-job
+    inputDefinitions:
+      parameters:
+        job_name:
+          parameterType: STRING
+        namespace:
+          defaultValue: default
+          isOptional: true
+          parameterType: STRING
+        timeout_minutes:
+          defaultValue: 60.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-submit-training-data-job:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - submit_training_data_job
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'pyyaml' 'kubernetes'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef submit_training_data_job(\n    target_date: str,\n    output_bucket:\
+          \ str = \"dvc-data\",\n    feature_bucket: str = \"raw-events\",\n    namespace:\
+          \ str = \"default\",\n) -> str:\n    \"\"\"\n    Submit SparkApplication\
+          \ for Training Data Generation.\n    Returns: job_name\n    \"\"\"\n   \
+          \ import json\n    from datetime import datetime\n\n    from kubernetes\
+          \ import client, config\n\n    config.load_incluster_config()\n\n    timestamp\
+          \ = datetime.now().strftime(\"%Y%m%d-%H%M%S\")\n    job_name = f\"training-data-job-{timestamp}\"\
+          \n\n    manifest = {\n        \"apiVersion\": \"sparkoperator.k8s.io/v1beta2\"\
+          ,\n        \"kind\": \"SparkApplication\",\n        \"metadata\": {\n  \
+          \          \"name\": job_name,\n            \"namespace\": namespace,\n\
+          \        },\n        \"spec\": {\n            \"type\": \"Python\",\n  \
+          \          \"pythonVersion\": \"3\",\n            \"mode\": \"cluster\"\
+          ,\n            \"image\": \"togather-ml/spark-batch-pipeline:latest\",\n\
+          \            \"imagePullPolicy\": \"IfNotPresent\",  # Ensure this matches\
+          \ your dev setup (e.g. Never/IfNotPresent)\n            \"mainApplicationFile\"\
+          : \"local:///opt/spark/work-dir/src/batch/generate_training_data_job.py\"\
+          ,\n            \"arguments\": [\n                \"--target-date\",\n  \
+          \              target_date,\n                \"--output-bucket\",\n    \
+          \            output_bucket,\n                \"--feature-bucket\",\n   \
+          \             feature_bucket,\n            ],\n            \"sparkVersion\"\
+          : \"3.5.0\",\n            # S3/MinIO Config\n            \"sparkConf\":\
+          \ {\n                \"spark.hadoop.fs.s3a.endpoint\": \"http://minio-0.minio.platform.svc.cluster.local:9000\"\
+          ,\n                \"spark.hadoop.fs.s3a.path.style.access\": \"true\",\n\
+          \                \"spark.hadoop.fs.s3a.impl\": \"org.apache.hadoop.fs.s3a.S3AFileSystem\"\
+          ,\n                \"spark.hadoop.fs.s3a.connection.ssl.enabled\": \"false\"\
+          ,\n                # Credentials (TODO: Secrets)\n                \"spark.hadoop.fs.s3a.access.key\"\
+          : \"minioadmin\",\n                \"spark.hadoop.fs.s3a.secret.key\": \"\
+          minioadmin123\",\n                \"spark.eventLog.enabled\": \"false\"\
+          ,\n            },\n            \"restartPolicy\": {\n                \"\
+          type\": \"OnFailure\",\n                \"onFailureRetries\": 3,\n     \
+          \           \"onFailureRetryInterval\": 30,\n            },\n          \
+          \  \"driver\": {\n                \"cores\": 1,\n                \"memory\"\
+          : \"1g\",\n                \"serviceAccount\": \"spark\",\n            \
+          \    \"env\": [\n                    # Credentials env vars for consistency\n\
+          \                    {\n                        \"name\": \"MINIO_ENDPOINT_URL\"\
+          ,\n                        \"value\": \"http://minio-0.minio.platform.svc.cluster.local:9000\"\
+          ,\n                    },\n                    {\"name\": \"AWS_ACCESS_KEY_ID\"\
+          , \"value\": \"minioadmin\"},\n                    {\"name\": \"AWS_SECRET_ACCESS_KEY\"\
+          , \"value\": \"minioadmin123\"},\n                ],\n            },\n \
+          \           \"executor\": {\n                \"cores\": 1,\n           \
+          \     \"memory\": \"1g\",\n                \"instances\": 1,\n         \
+          \       \"env\": [\n                    {\"name\": \"AWS_ACCESS_KEY_ID\"\
+          , \"value\": \"minioadmin\"},\n                    {\"name\": \"AWS_SECRET_ACCESS_KEY\"\
+          , \"value\": \"minioadmin123\"},\n                ],\n            },\n \
+          \       },\n    }\n\n    api = client.CustomObjectsApi()\n    try:\n   \
+          \     api.create_namespaced_custom_object(\n            group=\"sparkoperator.k8s.io\"\
+          ,\n            version=\"v1beta2\",\n            namespace=namespace,\n\
+          \            plural=\"sparkapplications\",\n            body=manifest,\n\
+          \        )\n        print(f\"Submitted SparkApplication: {job_name}\")\n\
+          \    except client.ApiException as e:\n        raise RuntimeError(f\"Failed\
+          \ to submit SparkApplication: {e}\")\n\n    return job_name\n\n"
+        image: python:3.10-slim
+    exec-wait-for-spark-job:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - wait_for_spark_job
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'kubernetes'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef wait_for_spark_job(\n    job_name: str,\n    namespace: str =\
+          \ \"default\",\n    timeout_minutes: int = 60,\n) -> str:\n    \"\"\"Wait\
+          \ for SparkApplication to complete.\"\"\"\n    import time\n\n    from kubernetes\
+          \ import client, config\n\n    config.load_incluster_config()\n    api =\
+          \ client.CustomObjectsApi()\n    start_time = time.time()\n    timeout_seconds\
+          \ = timeout_minutes * 60\n\n    while True:\n        elapsed = time.time()\
+          \ - start_time\n        if elapsed > timeout_seconds:\n            raise\
+          \ TimeoutError(f\"Spark job {job_name} timed out\")\n\n        try:\n  \
+          \          spark_app = api.get_namespaced_custom_object(\n             \
+          \   group=\"sparkoperator.k8s.io\",\n                version=\"v1beta2\"\
+          ,\n                namespace=namespace,\n                plural=\"sparkapplications\"\
+          ,\n                name=job_name,\n            )\n            state = (\n\
+          \                spark_app.get(\"status\", {})\n                .get(\"\
+          applicationState\", {})\n                .get(\"state\", \"UNKNOWN\")\n\
+          \            )\n            print(f\"Job {job_name} State: {state}\")\n\n\
+          \            if state == \"COMPLETED\":\n                return \"COMPLETED\"\
+          \n            elif state == \"FAILED\":\n                err = (\n     \
+          \               spark_app.get(\"status\", {})\n                    .get(\"\
+          applicationState\", {})\n                    .get(\"errorMessage\", \"Unknown\"\
+          )\n                )\n                raise RuntimeError(f\"Spark job failed:\
+          \ {err}\")\n        except client.ApiException as e:\n            print(f\"\
+          Error checking status: {e}\")\n\n        time.sleep(30)\n\n"
+        image: python:3.10-slim
+pipelineInfo:
+  description: Generate Two-Tower and Ranking training data from features
+  name: training-data-pipeline
+root:
+  dag:
+    tasks:
+      submit-training-data-job:
+        cachingOptions: {}
+        componentRef:
+          name: comp-submit-training-data-job
+        inputs:
+          parameters:
+            output_bucket:
+              componentInputParameter: output_bucket
+            target_date:
+              componentInputParameter: target_date
+        taskInfo:
+          name: submit-training-data-job
+      wait-for-spark-job:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-wait-for-spark-job
+        dependentTasks:
+        - submit-training-data-job
+        inputs:
+          parameters:
+            job_name:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: submit-training-data-job
+        taskInfo:
+          name: wait-for-spark-job
+  inputDefinitions:
+    parameters:
+      output_bucket:
+        defaultValue: dvc-data
+        isOptional: true
+        parameterType: STRING
+      target_date:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.7.0

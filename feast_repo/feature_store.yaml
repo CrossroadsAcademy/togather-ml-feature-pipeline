@@ -1,0 +1,16 @@
+project: togather_ml
+registry: s3://feast-offline-store/registry.pb
+provider: local
+
+online_store:
+  type: redis
+  connection_string: ${REDIS_HOST}:${REDIS_PORT}
+
+offline_store:
+  type: file
+
+entity_key_serialization_version: 2
+
+# Feature server configuration (for REST API)
+feature_server:
+  type: local
