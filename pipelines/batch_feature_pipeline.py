@@ -12,8 +12,7 @@ Usage:
     python pipelines/batch_feature_pipeline.py
 
     # Upload to Kubeflow
-    kfp --endpoint http://localhost:xxxx pipeline upload -p batch-feature-pipeline pipeline.yaml
-    or via kubeflow UI
+    kfp --endpoint http://localhost:8080 pipeline upload -p batch-feature-pipeline pipeline.yaml
 """
 
 from datetime import datetime, timedelta
@@ -30,7 +29,7 @@ from kfp import dsl
 def submit_spark_job(
     target_date: str,
     mode: str = "incremental",
-    namespace: str = "default",
+    namespace: str = "default",  # Spark operator watches 'default'
 ) -> str:
     """
     Submit SparkApplication to Kubernetes.
@@ -70,16 +69,14 @@ def submit_spark_job(
                 mode,
             ],
             "sparkVersion": "3.5.0",
-            # S3A/MinIO configuration with credentials
-            # NOTE: Hardcoded for now as Spark Operator doesn't properly inject env vars from secretKeyRef
+            # S3A/MinIO configuration - credentials from K8s secrets via env vars
             "sparkConf": {
-                "spark.hadoop.fs.s3a.endpoint": "http://minio-0.minio.platform.svc.cluster.local:9000",
+                "spark.hadoop.fs.s3a.endpoint": "http://minio.platform.svc.cluster.local:9000",
                 "spark.hadoop.fs.s3a.path.style.access": "true",
                 "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
                 "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
-                # Credentials (TODO: migrate to proper secrets once Spark Operator env var injection is verified)
-                "spark.hadoop.fs.s3a.access.key": "minioadmin",
-                "spark.hadoop.fs.s3a.secret.key": "minioadmin123",
+                # Use environment variables for credentials (injected from K8s secrets below)
+                "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",
                 # Event logging disabled due to hadoop-aws S3Guard compatibility
                 "spark.eventLog.enabled": "false",
             },
@@ -113,14 +110,17 @@ def submit_spark_job(
                     },
                     {
                         "name": "MINIO_ENDPOINT_URL",
-                        "value": "http://minio-0.minio.platform.svc.cluster.local:9000",
+                        "value": "http://minio.platform.svc.cluster.local:9000",
                     },
                     {"name": "REDIS_HOST", "value": "redis.platform.svc.cluster.local"},
                     {"name": "REDIS_PORT", "value": "6379"},
                     {
                         "name": "REDIS_PASSWORD",
                         "valueFrom": {
-                            "secretKeyRef": {"name": "redis-secret", "key": "REDIS_PASSWORD"}
+                            "secretKeyRef": {
+                                "name": "redis-secret",
+                                "key": "REDIS_PASSWORD",
+                            }
                         },
                     },
                 ],
@@ -165,7 +165,7 @@ def submit_spark_job(
         )
         print(f"Submitted SparkApplication: {job_name}")
     except client.ApiException as e:
-        raise RuntimeError(f"Failed to submit SparkApplication: {e}")  # noqa: B904
+        raise RuntimeError(f"Failed to submit SparkApplication: {e}") from e
 
     return job_name
 
@@ -239,7 +239,7 @@ def materialize_feast_features(
     feast_repo_path: str = "/app/feast_repo",
     redis_host: str = "redis.platform.svc.cluster.local",
     redis_port: int = 6379,
-    minio_endpoint: str = "http://minio-0.minio.platform.svc.cluster.local:9000",
+    minio_endpoint: str = "http://minio.platform.svc.cluster.local:9000",
 ) -> str:
     """
     Materialize features from MinIO offline store to Redis online store.
@@ -297,7 +297,7 @@ def validate_online_features(
     sample_size: int = 10,
     redis_host: str = "redis.platform.svc.cluster.local",
     redis_port: int = 6379,
-    redis_password: str = "admin1234",  # Default for K8s deployment
+    redis_password: str = "",  # From K8s secret via Kubeflow UI or default empty
 ) -> str:
     """
     Validate that features exist in Redis online store.

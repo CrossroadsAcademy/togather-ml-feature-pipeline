@@ -34,14 +34,14 @@ class SessionFeatures:
             "session_id": self.session_id,
             "session_start": self.session_start.isoformat(),
             "session_end": self.session_end.isoformat(),
-            "session_duration_seconds": str(self.session_duration_seconds),
-            "activity_count": str(self.activity_count),
-            "location_changes": str(self.location_changes),
-            "unique_event_types": str(self.unique_event_types),
+            "session_duration_seconds": self.session_duration_seconds,
+            "activity_count": self.activity_count,
+            "location_changes": self.location_changes,
+            "unique_event_types": self.unique_event_types,
             "last_event_type": self.last_event_type,
-            "last_latitude": str(self.last_latitude) if self.last_latitude else "",
-            "last_longitude": str(self.last_longitude) if self.last_longitude else "",
-            "engagement_score": str(self.engagement_score),
+            "last_latitude": (self.last_latitude if self.last_latitude is not None else ""),
+            "last_longitude": (self.last_longitude if self.last_longitude is not None else ""),
+            "engagement_score": self.engagement_score,
         }
 
 
@@ -64,12 +64,21 @@ def extract_session_features(events: list[dict[str, Any]]) -> SessionFeatures | 
     first_event = sorted_events[0]
     last_event = sorted_events[-1]
 
-    user_id = first_event.get("user_id", "unknown")
-    session_id = first_event.get("session_id") or _generate_session_id(user_id, first_event)
+    # Use user_id injected by the parser/job
+    user_id = first_event.get("user_id") or first_event.get("id") or "unknown"
+    session_id = (
+        first_event.get("session_id")
+        or first_event.get("sessionId")
+        or _generate_session_id(user_id, first_event)
+    )
 
-    # Parse timestamps
-    session_start = _parse_timestamp(first_event.get("timestamp"))
-    session_end = _parse_timestamp(last_event.get("timestamp"))
+    # Parse timestamps - Prefer normalized _extracted_timestamp
+    session_start = _parse_timestamp(
+        first_event.get("_extracted_timestamp") or first_event.get("timestamp")
+    )
+    session_end = _parse_timestamp(
+        last_event.get("_extracted_timestamp") or last_event.get("timestamp")
+    )
 
     # Compute duration
     session_duration = (
@@ -79,7 +88,7 @@ def extract_session_features(events: list[dict[str, Any]]) -> SessionFeatures | 
     # Count activities and event types
     event_type_counts: dict[str, int] = {}
     for event in sorted_events:
-        event_type = event.get("event_type", "unknown")
+        event_type = _get_event_type(event)
         event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
 
     # Count location changes
@@ -100,7 +109,7 @@ def extract_session_features(events: list[dict[str, Any]]) -> SessionFeatures | 
         activity_count=len(events),
         location_changes=location_changes,
         unique_event_types=len(event_type_counts),
-        last_event_type=last_event.get("event_type", ""),
+        last_event_type=_get_event_type(last_event),
         last_latitude=last_lat,
         last_longitude=last_lon,
         engagement_score=engagement_score,
@@ -143,8 +152,22 @@ def compute_engagement_score(events: list[dict[str, Any]]) -> float:
 
     total_score = 0.0
     for event in events:
-        event_type = event.get("event_type", "").lower()
-        total_score += event_weights.get(event_type, 0.5)
+        event_type = _get_event_type(event).lower()
+        if not event_type or event_type == "unknown":
+            total_score += 0.5
+            continue
+
+        # Check specific feedback types if present
+        if "feedback" in event_type:
+            feedback_type = event.get("event_type", "").lower()
+            if "view" in feedback_type:
+                total_score += 1.0
+            elif "click" in feedback_type:
+                total_score += 2.0
+            else:
+                total_score += 0.5
+        else:
+            total_score += event_weights.get(event_type, 0.5)
 
     # Normalize by max possible score (5 points per event)
     max_possible = len(events) * 5.0
@@ -185,16 +208,44 @@ def extract_location_features(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _parse_timestamp(ts_str: str | None) -> datetime | None:
-    """Parse ISO timestamp string to datetime."""
-    if not ts_str:
+def _get_event_type(event: dict[str, Any]) -> str:
+    """Standardize event type extraction.
+
+    Priority:
+    1. Inner `event_type` field (e.g., "View", "Like", "Save") - actual user action
+    2. Outer `_event_type` field (e.g., "feed.v1.RecommendationFeedback") - proto message name
+    """
+    # First, check for inner event_type (the actual action like View, Like, etc.)
+    inner_type = event.get("event_type")
+    if inner_type and isinstance(inner_type, str) and inner_type not in ("", "unknown"):
+        return inner_type
+
+    # Fallback to outer _event_type (proto message name, strip package prefix)
+    raw_type = event.get("_event_type") or "unknown"
+    return raw_type.split(".")[-1] if "." in raw_type else raw_type
+
+
+def _parse_timestamp(ts_value: str | int | None) -> datetime | None:
+    """Parse timestamp to datetime. Handles ISO strings and epoch milliseconds."""
+    if ts_value is None:
         return None
     try:
-        # Handle various ISO formats
-        if ts_str.endswith("Z"):
-            ts_str = ts_str[:-1] + "+00:00"
-        return datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError):
+        # Handle integer timestamps (epoch milliseconds from protobuf)
+        if isinstance(ts_value, (int | float)):
+            if ts_value > 1e12:  # Milliseconds
+                return datetime.fromtimestamp(ts_value / 1000.0)
+            else:  # Seconds
+                return datetime.fromtimestamp(ts_value)
+
+        # Handle string timestamps (ISO format)
+        if isinstance(ts_value, str):
+            ts_str = ts_value
+            if ts_str.endswith("Z"):
+                ts_str = ts_str[:-1] + "+00:00"
+            return datetime.fromisoformat(ts_str)
+
+        return None
+    except (ValueError, TypeError, OSError):
         return None
 
 
@@ -205,6 +256,42 @@ def _generate_session_id(user_id: str, first_event: dict[str, Any]) -> str:
     timestamp = first_event.get("timestamp", "")
     data = f"{user_id}:{timestamp}"
     return hashlib.md5(data.encode()).hexdigest()[:12]
+
+
+def _extract_location(event: dict[str, Any]) -> tuple[float | None, float | None]:
+    """
+    Extract latitude/longitude from event, handling nested structures.
+
+    Tries in order:
+    1. event_location_coordinate (ExperienceCreated)
+    2. current_address.coordinate (FeedMissTrigger, UserProfileCreated)
+    3. Top-level latitude/longitude fields
+    """
+    # Try event_location_coordinate (ExperienceCreated events)
+    event_location = event.get("event_location_coordinate") or event.get("eventLocationCoordinate")
+    if event_location and isinstance(event_location, dict):
+        lat = event_location.get("latitude")
+        lon = event_location.get("longitude")
+        if lat is not None and lon is not None:
+            return float(lat), float(lon)
+
+    # Try nested: current_address.coordinate.latitude/longitude
+    current_address = event.get("current_address") or event.get("currentAddress")
+    if current_address and isinstance(current_address, dict):
+        coordinate = current_address.get("coordinate")
+        if coordinate and isinstance(coordinate, dict):
+            lat = coordinate.get("latitude")
+            lon = coordinate.get("longitude")
+            if lat is not None and lon is not None:
+                return float(lat), float(lon)
+
+    # Try flat structure
+    lat = event.get("latitude")
+    lon = event.get("longitude")
+    if lat is not None and lon is not None:
+        return float(lat), float(lon)
+
+    return None, None
 
 
 def _count_location_changes(events: list[dict[str, Any]], threshold_meters: float = 100) -> int:
@@ -222,8 +309,7 @@ def _count_location_changes(events: list[dict[str, Any]], threshold_meters: floa
     prev_lat, prev_lon = None, None
 
     for event in events:
-        lat = event.get("latitude")
-        lon = event.get("longitude")
+        lat, lon = _extract_location(event)
 
         if lat is not None and lon is not None:
             if prev_lat is not None and prev_lon is not None:
@@ -238,10 +324,9 @@ def _count_location_changes(events: list[dict[str, Any]], threshold_meters: floa
 def _get_last_location(
     events: list[dict[str, Any]],
 ) -> tuple[float | None, float | None]:
-    """Get last known location from events."""
+    """Get last known location from events, handling nested structures."""
     for event in reversed(events):
-        lat = event.get("latitude")
-        lon = event.get("longitude")
+        lat, lon = _extract_location(event)
         if lat is not None and lon is not None:
             return lat, lon
     return None, None

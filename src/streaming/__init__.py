@@ -1,20 +1,12 @@
 """Streaming module exports."""
 
+from src.streaming.app_events_processor import AppEventsProcessor
 from src.streaming.kafka_consumer import (
-    AppEventsProcessor,
     EventProcessor,
     KafkaConsumer,
     KafkaConsumerConfig,
     NonRetryableException,
     RetryableException,
-)
-from src.streaming.schema_registry import (
-    ProtobufDeserializer,
-    ProtobufSerializer,
-    SchemaMetadata,
-    SchemaRegistryClient,
-    get_key_subject,
-    get_value_subject,
 )
 from src.streaming.storage_sink import (
     DataArchiver,
@@ -24,6 +16,8 @@ from src.streaming.storage_sink import (
     StorageSink,
     StorageSinkConfig,
 )
+
+# Note: Schema Registry removed - using two-layer protobuf (EventEnvelope) with togather-event-sdk
 
 __all__ = [
     # Kafka Consumer
@@ -40,11 +34,4 @@ __all__ = [
     # Backward compatibility
     "ParquetSink",
     "ParquetSinkConfig",
-    # Schema Registry / Protobuf
-    "SchemaRegistryClient",
-    "SchemaMetadata",
-    "ProtobufSerializer",
-    "ProtobufDeserializer",
-    "get_value_subject",
-    "get_key_subject",
 ]

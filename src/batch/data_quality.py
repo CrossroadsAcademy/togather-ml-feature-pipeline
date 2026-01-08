@@ -150,13 +150,13 @@ class DataQualityValidator:
                 self._record_validation_failure("required_columns", entity_type, total_count)
                 return df.limit(0), report  # Return empty if missing critical columns
 
-            # Check 2: Null rates
+            # Check Null rates
             null_check, null_failures = self._check_null_rates(df, required_columns)
             report.results.append(null_check)
             if not null_check.is_valid:
                 self._record_validation_failure("null_rate", entity_type, null_failures)
 
-            # Check 3: Timestamp validity
+            # Check Timestamp validity
             if "timestamp" in df.columns or "event_timestamp" in df.columns:
                 ts_col = "event_timestamp" if "event_timestamp" in df.columns else "timestamp"
                 ts_check = self._check_timestamp_validity(df, ts_col)
@@ -166,7 +166,7 @@ class DataQualityValidator:
                         "timestamp_invalid", entity_type, ts_check.failed_count
                     )
 
-            # Check 4: Entity ID not empty
+            # Check Entity ID not empty
             entity_col = f"{entity_type}_id"
             if entity_col in df.columns:
                 id_check = self._check_entity_id(df, entity_col)
@@ -221,7 +221,7 @@ class DataQualityValidator:
                 timestamp=datetime.now(),
             )
 
-            # total_count = df.count()  # noqa: F841
+            total_count = df.count()  # noqa: F841
 
             # Check Duplicates
             dup_check = self._check_duplicates(df, entity_col)
@@ -381,11 +381,71 @@ class DataQualityValidator:
         df: DataFrame,
         report: ValidationReport,
     ) -> tuple[DataFrame, DataFrame]:
-        """Split DataFrame into valid and invalid records."""
-        # TODO
-        # Build filter condition from failed checks
-        # For now, just filter out nulls in critical columns
-        valid_df = df.filter(F.col("user_id").isNotNull() & (F.trim(F.col("user_id")) != ""))
+        """
+        Split DataFrame into valid and invalid records based on event type.
+
+        Different event types have different required fields:
+        - experience_events: require 'id' (experience ID)
+        - user_account_events, user_profile_events: require 'id' (user ID)
+        - recommendation_feedback_v1: require 'user_id'
+        """
+        # Determine ID field based on event type
+        # Check if partition_event_type column exists
+        if "partition_event_type" in df.columns:
+            # Event-type aware validation
+            valid_df = df.filter(
+                # Experience events: check 'id'
+                (
+                    (F.col("partition_event_type") == "experience_events")
+                    & F.col("id").isNotNull()
+                    & (F.trim(F.col("id")) != "")
+                )
+                |
+                # User account/profile events: check 'id'
+                (
+                    (
+                        F.col("partition_event_type").isin(
+                            ["user_account_events", "user_profile_events"]
+                        )
+                    )
+                    & F.col("id").isNotNull()
+                    & (F.trim(F.col("id")) != "")
+                )
+                |
+                # Recommendation feedback: check 'user_id'
+                (
+                    (F.col("partition_event_type") == "recommendation_feedback_v1")
+                    & F.col("user_id").isNotNull()
+                    & (F.trim(F.col("user_id")) != "")
+                )
+            )
+        elif "_event_type" in df.columns:
+            # Fallback to _event_type column
+            valid_df = df.filter(
+                # Experience events
+                (F.col("_event_type").contains("Experience") & F.col("id").isNotNull())
+                |
+                # User events
+                (F.col("_event_type").contains("User") & F.col("id").isNotNull())
+                |
+                # Feedback events
+                (F.col("_event_type").contains("Feedback") & F.col("user_id").isNotNull())
+                |
+                # Pass through unknown event types if they have some ID
+                (
+                    ~F.col("_event_type").contains("Experience")
+                    & ~F.col("_event_type").contains("User")
+                    & ~F.col("_event_type").contains("Feedback")
+                    & (F.col("id").isNotNull() | F.col("user_id").isNotNull())
+                )
+            )
+        else:
+            # Legacy fallback: check user_id OR id
+            valid_df = df.filter(
+                (F.col("user_id").isNotNull() & (F.trim(F.col("user_id")) != ""))
+                | (F.col("id").isNotNull() & (F.trim(F.col("id")) != ""))
+            )
+
         invalid_df = df.subtract(valid_df)
 
         return valid_df, invalid_df

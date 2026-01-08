@@ -1,10 +1,9 @@
 """Production-ready Kafka consumer skeleton with observability, retry patterns, and DLQ support."""
 
 import asyncio
-import json
 import signal
 import time
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from unittest.mock import Mock
 
 from confluent_kafka import Consumer, KafkaError, Message, TopicPartition
@@ -87,8 +86,10 @@ class KafkaConsumerConfig(BaseModel):
     enable_auto_commit: bool = Field(
         default=True, description="Enable auto commit - prefer manual commits"
     )
-    session_timeout_ms: int = Field(default=30000, description="Session timeout in ms")
-    heartbeat_interval_ms: int = Field(default=10000, description="Heartbeat interval in ms")
+    session_timeout_ms: int = Field(
+        default=45000, description="Session timeout in ms (increased for cloud Kafka)"
+    )
+    heartbeat_interval_ms: int = Field(default=15000, description="Heartbeat interval in ms")
     max_poll_interval_ms: int = Field(default=300000, description="Max poll interval in ms")
     max_poll_records: int = Field(
         default=500,
@@ -156,6 +157,14 @@ class KafkaConsumer:
             "enable.auto.commit": False,  # noqa: F601
             # Security configuration
             "security.protocol": self.config.security_protocol,
+            # Socket keepalive to prevent idle connection drops (critical for cloud Kafka)
+            "socket.keepalive.enable": True,
+            # Reconnection settings for resilience
+            "reconnect.backoff.ms": 100,
+            "reconnect.backoff.max.ms": 10000,
+            # Connection timeout settings
+            "socket.timeout.ms": 60000,
+            "connections.max.idle.ms": 540000,  # 9 minutes (default broker timeout is 10 min)
         }
 
         # Add SASL configuration if provided
@@ -247,98 +256,31 @@ class KafkaConsumer:
 
     def _parse_message(self, message: Message) -> dict[str, Any]:
         """
-        Parse Kafka message with Protobuf or JSON support.
+        Parse Kafka message using EventEnvelope pattern (Protobuf-only).
 
-        Attempts Protobuf deserialization first (Confluent wire format),
-        falls back to JSON if no magic byte is present.
+        The backend uses a 2-layer protobuf approach:
+        1. Outer: EventEnvelope (event_type, event_version, timestamp, trace_id, payload)
+        2. Inner: Specific event type (UserProfileCreated, ExperienceCreated, etc.)
+
+        Uses togather-event-sdk for deserialization.
         """
         try:
             raw_value = message.value()
             if not raw_value:
-                return {}
+                raise NonRetryableException("Empty message value")
 
-            # Check for Confluent wire format (Protobuf)
-            # Magic byte = 0, followed by 4-byte schema ID
-            if len(raw_value) >= 5 and raw_value[0] == 0:
-                # Protobuf message with Schema Registry
-                return self._parse_protobuf_message(raw_value, message)
+            # Parse as EventEnvelope protobuf (no JSON fallback)
+            msg_data = self._parse_event_envelope(raw_value)
 
-            # Fallback to JSON
-            try:
-                msg_data = cast(dict[str, Any], json.loads(raw_value.decode("utf-8")))
-            except Exception:
-                msg_data = {"raw_value": raw_value.hex()}
+            if not msg_data:
+                raise NonRetryableException("Failed to parse EventEnvelope: empty result")
 
-            # If it's a unittest.Mock message, skip metadata
-            if isinstance(message, Mock):
-                return msg_data
+            if msg_data.get("parse_error"):
+                raise NonRetryableException(
+                    f"EventEnvelope parse error: {msg_data.get('parse_error')}"
+                )
 
-            # Only real Kafka messages get metadata
-            msg_data.update(
-                {
-                    "partition": message.partition(),
-                    "offset": message.offset(),
-                    "timestamp": (message.timestamp()[1] if message.timestamp() else None),
-                    "key": message.key().decode("utf-8") if message.key() else None,
-                }
-            )
-            return msg_data
-
-        except Exception as e:
-            self.logger.error("Error parsing message", error=str(e))
-            return {"raw_value": message.value(), "parse_error": str(e)}
-
-    def _parse_protobuf_message(self, raw_value: bytes, message: Message) -> dict[str, Any]:
-        """
-        Parse Protobuf message using Schema Registry.
-
-        Uses the ProtobufDeserializer with registered message types.
-        """
-        import struct
-
-        try:
-            # Extract schema ID from Confluent wire format
-            schema_id = struct.unpack(">I", raw_value[1:5])[0]
-            message_bytes = raw_value[5:]
-
-            # Get topic for subject lookup
-            topic = "test-topic" if isinstance(message, Mock) else message.topic()
-            subject = f"{topic}-value"  # noqa: F841
-
-            # Try to deserialize using registered message type
-            # Import here to avoid circular imports
-            from src.streaming.schema_registry import (
-                ProtobufDeserializer,
-                SchemaRegistryClient,
-                get_value_subject,
-            )
-
-            # Get schema registry URL from settings
-            from src.utils.config import settings
-
-            schema_registry_url = getattr(
-                settings,
-                "schema_registry_url",
-                "http://schema-registry.platform.svc.cluster.local:8081",
-            )
-
-            sr_client = SchemaRegistryClient(schema_registry_url)
-            deserializer = ProtobufDeserializer(sr_client)
-
-            # Attempt deserialization
-            result, error = deserializer.deserialize_to_dict(raw_value, get_value_subject(topic))
-
-            if error:
-                self.logger.warning(f"Protobuf deserialization failed: {error}")
-                return {
-                    "schema_id": schema_id,
-                    "raw_payload": message_bytes.hex(),
-                    "parse_error": error,
-                }
-
-            msg_data = result or {}
-
-            # Add Kafka metadata
+            # Add Kafka metadata if real message (not Mock)
             if not isinstance(message, Mock):
                 msg_data.update(
                     {
@@ -346,27 +288,222 @@ class KafkaConsumer:
                         "offset": message.offset(),
                         "timestamp": (message.timestamp()[1] if message.timestamp() else None),
                         "key": message.key().decode("utf-8") if message.key() else None,
-                        "_schema_id": schema_id,
                     }
                 )
 
             return msg_data
 
+        except NonRetryableException:
+            raise  # Re-raise as is
         except Exception as e:
-            self.logger.error(f"Protobuf parsing error: {e}", exc_info=True)
+            self.logger.error("Error parsing message", error=str(e))
+            raise NonRetryableException(f"Message parsing failed: {str(e)}") from e
+
+    def _parse_event_envelope(self, raw_value: bytes) -> dict[str, Any]:
+        """
+        Parse EventEnvelope protobuf message using togather-event-sdk.
+
+        Returns the inner payload as a dict with envelope metadata.
+
+        Note: Similar to Flink's event_envelope_parser, we handle the case
+        where bytes might need ISO-8859-1 encoding/decoding.
+        """
+        try:
+            from google.protobuf.json_format import MessageToDict
+            from togather_event_sdk.common.v1.event_envelop_pb2 import EventEnvelope
+        except ImportError:
+            self.logger.warning("togather-event-sdk not installed, cannot parse protobuf")
+            return {"parse_error": "togather-event-sdk not installed"}
+
+        try:
+            # Handle bytes vs string (matching Flink's approach)
+            if isinstance(raw_value, str):
+                # If it's a string (e.g., from ISO-8859-1 decoding), encode back to bytes
+                proto_bytes = raw_value.encode("iso-8859-1")
+            else:
+                proto_bytes = raw_value
+
+            # Step 1: Deserialize the outer EventEnvelope
+            envelope = EventEnvelope()
+            envelope.ParseFromString(proto_bytes)
+
+            if not envelope.event_type:
+                # Log hex dump for debugging
+                hex_sample = proto_bytes[:50].hex() if proto_bytes else "empty"
+                self.logger.debug(f"Missing event_type, hex: {hex_sample}")
+                return {
+                    "parse_error": "Invalid envelope: missing event_type",
+                    "hex": hex_sample,
+                }
+
+            self.logger.info(f"[SDK] Parsed envelope: type={envelope.event_type}")
+
+            # Step 2: Get the payload class based on event_type
+            payload_class = self._get_payload_class(envelope.event_type)
+
+            if not payload_class:
+                self.logger.warning(f"Unknown event_type: {envelope.event_type}")
+                # Return with warning, not error - unknown events should be archived, not DLQ'd
+                return {
+                    "_event_type": envelope.event_type,
+                    "_event_version": envelope.event_version,
+                    "_timestamp": envelope.timestamp,
+                    "_trace_id": (envelope.trace_id if envelope.HasField("trace_id") else None),
+                    "_payload_warning": f"Unknown event_type: {envelope.event_type}",
+                }
+
+            # Step 3: Deserialize the inner payload
+            payload_msg = payload_class()
+            payload_msg.ParseFromString(envelope.payload)
+
+            # Convert to dict
+            msg_data = MessageToDict(payload_msg, preserving_proto_field_name=True)
+
+            # Add envelope metadata
+            msg_data["_event_type"] = envelope.event_type
+            msg_data["_event_version"] = envelope.event_version
+            msg_data["_timestamp"] = envelope.timestamp
+            if envelope.HasField("trace_id"):
+                msg_data["_trace_id"] = envelope.trace_id
+
+            return msg_data
+
+        except Exception as e:
+            # Log hex dump for debugging
+            hex_sample = raw_value[:50].hex() if raw_value else "empty"
+            self.logger.error(f"EventEnvelope parsing error: {e}, hex: {hex_sample}")
             return {
-                "raw_payload": (raw_value[5:].hex() if len(raw_value) > 5 else raw_value.hex()),
+                "raw_hex": hex_sample,
                 "parse_error": str(e),
             }
 
+    def _get_payload_class(self, event_type: str):
+        """
+        Get the protobuf class for the given event_type.
+
+        Uses togather-event-sdk stubs.
+        """
+        # Lazy load the mapping to avoid import errors if SDK not installed
+        if not hasattr(self, "_event_type_mapping"):
+            self._event_type_mapping = self._build_event_type_mapping()
+
+        return self._event_type_mapping.get(event_type)
+
+    def _build_event_type_mapping(self) -> dict[str, Any]:
+        """Build mapping of event_type strings to protobuf classes."""
+        mapping: dict[str, Any] = {}
+
+        try:
+            # User events
+            from togather_event_sdk.user.v1.user_account_created_pb2 import (
+                UserAccountCreated,
+            )
+            from togather_event_sdk.user.v1.user_profile_created_pb2 import (
+                UserProfileCreated,
+            )
+
+            mapping["user.v1.UserAccountCreated"] = UserAccountCreated
+            mapping["user.v1.UserProfileCreated"] = UserProfileCreated
+        except ImportError:
+            pass
+
+        try:
+            from togather_event_sdk.user.v1.user_email_verification_requested_pb2 import (
+                UserEmailVerificationRequestedPayload,
+            )
+            from togather_event_sdk.user.v1.user_forgot_password_pb2 import (
+                UserForgotPasswordPayload,
+            )
+
+            mapping[
+                "user.v1.UserEmailVerificationRequestedPayload"
+            ] = UserEmailVerificationRequestedPayload
+            mapping["user.v1.UserForgotPasswordPayload"] = UserForgotPasswordPayload
+        except ImportError:
+            pass
+
+        try:
+            # Experience events
+            from togather_event_sdk.experience.v1.experience_created_pb2 import (
+                ExperienceCreated,
+            )
+
+            mapping["experience.v1.ExperienceCreated"] = ExperienceCreated
+        except ImportError:
+            pass
+
+        try:
+            # Partner events
+            from togather_event_sdk.partner.v1.partner_profile_created_pb2 import (
+                PartnerProfileCreated,
+            )
+
+            mapping["partner.v1.PartnerProfileCreated"] = PartnerProfileCreated
+        except ImportError:
+            pass
+
+        try:
+            # Admin events
+            from togather_event_sdk.admin.v1.admin_account_created_pb2 import (
+                AdminAccountCreatedPayload,
+            )
+            from togather_event_sdk.admin.v1.admin_email_verification_requested_pb2 import (
+                AdminEmailVerificationRequestedPayload,
+            )
+
+            mapping["admin.v1.AdminAccountCreatedPayload"] = AdminAccountCreatedPayload
+            mapping[
+                "admin.v1.AdminEmailVerificationRequestedPayload"
+            ] = AdminEmailVerificationRequestedPayload
+        except ImportError:
+            pass
+
+        try:
+            # Feed events (recommendation)
+            from togather_event_sdk.feed.v1.recommendation_feedback_pb2 import (
+                RecommendationFeedback,
+            )
+            from togather_event_sdk.feed.v1.recommendation_served_pb2 import (
+                RecommendationServedEvent,
+            )
+
+            mapping["feed.v1.RecommendationFeedback"] = RecommendationFeedback
+            mapping["feed.v1.RecommendationServedEvent"] = RecommendationServedEvent
+        except ImportError:
+            pass
+
+        self.logger.info(f"Loaded {len(mapping)} event type mappings from togather-event-sdk")
+        return mapping
+
     async def _send_to_dlq(self, message: Message, topic: str, error_reason: str) -> None:
         """Send message to dead letter queue."""
+        # Handle binary protobuf data safely - encode as base64 if UTF-8 decode fails
+        original_key = None
+        if message.key():
+            try:
+                original_key = message.key().decode("utf-8")
+            except UnicodeDecodeError:
+                import base64
+
+                original_key = f"base64:{base64.b64encode(message.key()).decode('ascii')}"
+
+        original_value = ""
+        if message.value():
+            try:
+                original_value = message.value().decode("utf-8")
+            except UnicodeDecodeError:
+                import base64
+
+                # Store first 1KB as base64 to avoid huge DLQ messages
+                truncated = message.value()[:1024]
+                original_value = f"base64:{base64.b64encode(truncated).decode('ascii')}"
+
         dlq_message = DLQMessage(  # noqa: F841
             original_topic=topic,
             original_partition=message.partition(),
             original_offset=message.offset(),
-            original_key=message.key().decode("utf-8") if message.key() else None,
-            original_value=message.value().decode("utf-8") if message.value() else "",
+            original_key=original_key,
+            original_value=original_value,
             error_reason=error_reason,
         )
 
@@ -513,33 +650,42 @@ class KafkaConsumer:
                 self.consumer.close()
                 self.logger.info("Consumer closed gracefully")
 
+    def is_healthy(self) -> tuple[bool, str]:
+        """
+        Check if Kafka consumer is healthy. Used by health check server.
 
-class AppEventsProcessor:
-    """Example processor for app events."""
+        Returns:
+            Tuple of (is_healthy, message)
+        """
+        if not self.consumer:
+            return False, "Consumer not initialized"
 
-    def __init__(self):
-        self.logger = get_logger(self.__class__.__name__)
+        if not self.running:
+            return False, "Consumer not running"
 
-    async def process(self, message: dict[str, Any], topic: str) -> None:
-        """Process app event message."""
-        self.logger.info(
-            "Processing app event",
-            topic=topic,
-            event_type=message.get("event_type"),
-            user_id=message.get("user_id"),
-        )
+        try:
+            # Check if we have partition assignments
+            assignment = self.consumer.assignment()
+            if not assignment:
+                return False, "No partitions assigned"
 
-        # Add  logic here
-        # Plug in processing logic
+            # Calculate total lag across all partitions
+            total_lag = 0
+            partition_count = len(assignment)
 
-        # Example validation
-        if not message.get("user_id"):
-            raise NonRetryableException("Missing required field: user_id")
+            for partition in assignment:
+                try:
+                    high_watermark = self.consumer.get_watermark_offsets(partition)[1]
+                    position = self.consumer.position([partition])[0].offset
+                    if position >= 0:
+                        total_lag += high_watermark - position
+                except Exception:
+                    pass
 
-        # Simulate processing time
-        await asyncio.sleep(0.1)
+            return True, f"Consuming {partition_count} partitions, lag: {total_lag}"
 
-        self.logger.info("App event processed successfully", topic=topic)
+        except Exception as e:
+            return False, f"Health check failed: {str(e)}"
 
 
 async def main():
@@ -547,6 +693,9 @@ async def main():
     import os
 
     import pyroscope
+
+    # Import  AppEventsProcessor
+    from src.streaming.app_events_processor import AppEventsProcessor
 
     # Configure Pyroscope profiling
     pyroscope.configure(

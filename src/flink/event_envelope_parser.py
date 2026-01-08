@@ -3,9 +3,10 @@ Event Envelope Parser for Flink.
 
 Uses togather-event-sdk for protobuf parsing exclusively.
 Expects raw bytes (passed through ISO-8859-1 encoding from Flink).
+
+This parser uses only the event types verified in production Kafka.
 """
 
-import json
 from typing import Any
 
 # SDK IMPORTS
@@ -98,21 +99,13 @@ def parse_kafka_message(raw_string: str) -> dict[str, Any]:
     Main entry point for Flink.
 
     Flink passes bytes as a string (ISO-8859-1 encoded).
-    We convert back to bytes and parse using the SDK.
+    Converts back to bytes and parse using the SDK.
+
     """
     if not raw_string:
         return {"_parse_error": "Empty message"}
 
-    # 1. Try JSON fallback (for debugging or test messages)
-    try:
-        if raw_string.strip().startswith("{"):
-            data = json.loads(raw_string)
-            data["_event_type"] = "json"
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # 2. Protobuf parsing using SDK
+    # Protobuf parsing using SDK (no JSON fallback)
     try:
         if not SDK_AVAILABLE:
             return {"_parse_error": "togather-event-sdk not available"}
@@ -134,6 +127,7 @@ def parse_kafka_message(raw_string: str) -> dict[str, Any]:
             # Add hex dump for debugging
             hex_dump = raw_bytes.hex()[:100]
             print(f"[Parser] ERROR: SDK failed to parse envelope. Error: {e}, Hex: {hex_dump}")
+            # Still try to return some info (manual parse fallback for internal visibility)
             return {
                 "_parse_error": f"SDK envelope parse failed: {str(e)}",
                 "_hex": hex_dump,
@@ -177,21 +171,21 @@ def get_user_id_from_event(event: dict[str, Any]) -> str | None:
     if event.get("_parse_error"):
         return None
 
-    # userId (SDK camelCase for feed events)
+    # Priority 1: userId (SDK camelCase for feed events)
     if event.get("userId"):
         return str(event["userId"])
 
-    # user_id (snake_case)
+    # Priority 2: user_id (snake_case)
     if event.get("user_id"):
         return str(event["user_id"])
 
-    # id field for user-related events
+    # Priority 3: id field for user-related events
     event_type = str(event.get("_event_type", ""))
     if event_type.startswith("user.") or "AccountCreated" in event_type:
         if event.get("id"):
             return str(event["id"])
 
-    # Look for numeric tags as last resort (if manual parser ran)
+    # Priority 4: Look for numeric tags as last resort
     # 2 is user_id in RecommendationFeedback
     # 1 is id in UserProfileCreated / UserAccountCreated
     for tag in ["2", "1", "user_id", "userId", "id"]:

@@ -28,12 +28,12 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.1.14
     hooks:
-      # Linting (may auto-fix, but does NOT fail commit)
+      # Linting
       - id: ruff
         name: Lint with Ruff
         args: ["--fix"]
 
-      # Formatting (Black-compatible, stable)
+      # Formatting
       - id: ruff-format
         name: Format code with Ruff
 

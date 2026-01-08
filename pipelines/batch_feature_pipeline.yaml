@@ -36,7 +36,7 @@ components:
           isOptional: true
           parameterType: STRING
         redis_password:
-          defaultValue: admin1234
+          defaultValue: ''
           isOptional: true
           parameterType: STRING
         redis_port:
@@ -64,7 +64,7 @@ components:
           isOptional: true
           parameterType: STRING
         redis_password:
-          defaultValue: admin1234
+          defaultValue: ''
           isOptional: true
           parameterType: STRING
         redis_port:
@@ -142,48 +142,60 @@ deploymentSpec:
           \        \"mode\": \"cluster\",\n            \"image\": \"togather-ml/spark-batch-pipeline:latest\"\
           ,\n            \"imagePullPolicy\": \"IfNotPresent\",\n            \"mainApplicationFile\"\
           : \"local:///opt/spark/work-dir/src/batch/batch_feature_job.py\",\n    \
-          \        \"arguments\": [\n                \"--target-date\", target_date,\n\
-          \                \"--mode\", mode,\n            ],\n            \"sparkVersion\"\
-          : \"3.5.0\",\n            # S3A/MinIO configuration with credentials\n \
-          \           # NOTE: Hardcoded for now as Spark Operator doesn't properly\
-          \ inject env vars from secretKeyRef\n            \"sparkConf\": {\n    \
-          \            \"spark.hadoop.fs.s3a.endpoint\": \"http://minio-0.minio.platform.svc.cluster.local:9000\"\
-          ,\n                \"spark.hadoop.fs.s3a.path.style.access\": \"true\",\n\
-          \                \"spark.hadoop.fs.s3a.impl\": \"org.apache.hadoop.fs.s3a.S3AFileSystem\"\
+          \        \"arguments\": [\n                \"--target-date\",\n        \
+          \        target_date,\n                \"--mode\",\n                mode,\n\
+          \            ],\n            \"sparkVersion\": \"3.5.0\",\n            #\
+          \ S3A/MinIO configuration - credentials from K8s secrets via env vars\n\
+          \            \"sparkConf\": {\n                \"spark.hadoop.fs.s3a.endpoint\"\
+          : \"http://minio-0.minio.platform.svc.cluster.local:9000\",\n          \
+          \      \"spark.hadoop.fs.s3a.path.style.access\": \"true\",\n          \
+          \      \"spark.hadoop.fs.s3a.impl\": \"org.apache.hadoop.fs.s3a.S3AFileSystem\"\
           ,\n                \"spark.hadoop.fs.s3a.connection.ssl.enabled\": \"false\"\
-          ,\n                # Credentials (TODO: migrate to proper secrets once Spark\
-          \ Operator env var injection is verified)\n                \"spark.hadoop.fs.s3a.access.key\"\
-          : \"minioadmin\",\n                \"spark.hadoop.fs.s3a.secret.key\": \"\
-          minioadmin123\",\n                # Event logging disabled due to hadoop-aws\
-          \ S3Guard compatibility\n                \"spark.eventLog.enabled\": \"\
-          false\",\n            },\n            \"restartPolicy\": {\n           \
-          \     \"type\": \"OnFailure\",\n                \"onFailureRetries\": 3,\n\
-          \                \"onFailureRetryInterval\": 30,\n            },\n     \
-          \       \"driver\": {\n                \"cores\": 1,\n                \"\
-          memory\": \"1g\",\n                \"serviceAccount\": \"spark\",\n    \
-          \            \"env\": [\n                    {\n                       \
-          \ \"name\": \"AWS_ACCESS_KEY_ID\",\n                        \"valueFrom\"\
-          : {\"secretKeyRef\": {\"name\": \"spark-s3-credentials\", \"key\": \"AWS_ACCESS_KEY_ID\"\
-          }},\n                    },\n                    {\n                   \
-          \     \"name\": \"AWS_SECRET_ACCESS_KEY\",\n                        \"valueFrom\"\
-          : {\"secretKeyRef\": {\"name\": \"spark-s3-credentials\", \"key\": \"AWS_SECRET_ACCESS_KEY\"\
-          }},\n                    },\n                    {\"name\": \"MINIO_ENDPOINT_URL\"\
-          , \"value\": \"http://minio-0.minio.platform.svc.cluster.local:9000\"},\n\
-          \                    {\"name\": \"REDIS_HOST\", \"value\": \"redis.platform.svc.cluster.local\"\
-          },\n                    {\"name\": \"REDIS_PORT\", \"value\": \"6379\"},\n\
-          \                    {\"name\": \"REDIS_PASSWORD\", \"valueFrom\": {\"secretKeyRef\"\
-          : {\"name\": \"redis-secret\", \"key\": \"REDIS_PASSWORD\"}}},\n       \
-          \         ],\n            },\n            \"executor\": {\n            \
-          \    \"cores\": 1,\n                \"memory\": \"2g\",\n              \
-          \  \"instances\": 2,\n                \"env\": [\n                    {\n\
-          \                        \"name\": \"AWS_ACCESS_KEY_ID\",\n            \
-          \            \"valueFrom\": {\"secretKeyRef\": {\"name\": \"spark-s3-credentials\"\
-          , \"key\": \"AWS_ACCESS_KEY_ID\"}},\n                    },\n          \
-          \          {\n                        \"name\": \"AWS_SECRET_ACCESS_KEY\"\
-          ,\n                        \"valueFrom\": {\"secretKeyRef\": {\"name\":\
-          \ \"spark-s3-credentials\", \"key\": \"AWS_SECRET_ACCESS_KEY\"}},\n    \
-          \                },\n                ],\n            },\n        },\n  \
-          \  }\n\n    # Apply using Kubernetes API\n    api = client.CustomObjectsApi()\n\
+          ,\n                # Use environment variables for credentials (injected\
+          \ from K8s secrets below)\n                \"spark.hadoop.fs.s3a.aws.credentials.provider\"\
+          : \"com.amazonaws.auth.EnvironmentVariableCredentialsProvider\",\n     \
+          \           # Event logging disabled due to hadoop-aws S3Guard compatibility\n\
+          \                \"spark.eventLog.enabled\": \"false\",\n            },\n\
+          \            \"restartPolicy\": {\n                \"type\": \"OnFailure\"\
+          ,\n                \"onFailureRetries\": 3,\n                \"onFailureRetryInterval\"\
+          : 30,\n            },\n            \"driver\": {\n                \"cores\"\
+          : 1,\n                \"memory\": \"1g\",\n                \"serviceAccount\"\
+          : \"spark\",\n                \"env\": [\n                    {\n      \
+          \                  \"name\": \"AWS_ACCESS_KEY_ID\",\n                  \
+          \      \"valueFrom\": {\n                            \"secretKeyRef\": {\n\
+          \                                \"name\": \"spark-s3-credentials\",\n \
+          \                               \"key\": \"AWS_ACCESS_KEY_ID\",\n      \
+          \                      }\n                        },\n                 \
+          \   },\n                    {\n                        \"name\": \"AWS_SECRET_ACCESS_KEY\"\
+          ,\n                        \"valueFrom\": {\n                          \
+          \  \"secretKeyRef\": {\n                                \"name\": \"spark-s3-credentials\"\
+          ,\n                                \"key\": \"AWS_SECRET_ACCESS_KEY\",\n\
+          \                            }\n                        },\n           \
+          \         },\n                    {\n                        \"name\": \"\
+          MINIO_ENDPOINT_URL\",\n                        \"value\": \"http://minio-0.minio.platform.svc.cluster.local:9000\"\
+          ,\n                    },\n                    {\"name\": \"REDIS_HOST\"\
+          , \"value\": \"redis.platform.svc.cluster.local\"},\n                  \
+          \  {\"name\": \"REDIS_PORT\", \"value\": \"6379\"},\n                  \
+          \  {\n                        \"name\": \"REDIS_PASSWORD\",\n          \
+          \              \"valueFrom\": {\n                            \"secretKeyRef\"\
+          : {\n                                \"name\": \"redis-secret\",\n     \
+          \                           \"key\": \"REDIS_PASSWORD\",\n             \
+          \               }\n                        },\n                    },\n\
+          \                ],\n            },\n            \"executor\": {\n     \
+          \           \"cores\": 1,\n                \"memory\": \"2g\",\n       \
+          \         \"instances\": 2,\n                \"env\": [\n              \
+          \      {\n                        \"name\": \"AWS_ACCESS_KEY_ID\",\n   \
+          \                     \"valueFrom\": {\n                            \"secretKeyRef\"\
+          : {\n                                \"name\": \"spark-s3-credentials\"\
+          ,\n                                \"key\": \"AWS_ACCESS_KEY_ID\",\n   \
+          \                         }\n                        },\n              \
+          \      },\n                    {\n                        \"name\": \"AWS_SECRET_ACCESS_KEY\"\
+          ,\n                        \"valueFrom\": {\n                          \
+          \  \"secretKeyRef\": {\n                                \"name\": \"spark-s3-credentials\"\
+          ,\n                                \"key\": \"AWS_SECRET_ACCESS_KEY\",\n\
+          \                            }\n                        },\n           \
+          \         },\n                ],\n            },\n        },\n    }\n\n\
+          \    # Apply using Kubernetes API\n    api = client.CustomObjectsApi()\n\
           \    try:\n        api.create_namespaced_custom_object(\n            group=\"\
           sparkoperator.k8s.io\",\n            version=\"v1beta2\",\n            namespace=namespace,\n\
           \            plural=\"sparkapplications\",\n            body=manifest,\n\
@@ -220,19 +232,19 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef validate_online_features(\n    entity_type: str = \"user\",\n\
           \    sample_size: int = 10,\n    redis_host: str = \"redis.platform.svc.cluster.local\"\
-          ,\n    redis_port: int = 6379,\n    redis_password: str = \"admin1234\"\
-          ,  # Default for K8s deployment\n) -> str:\n    \"\"\"\n    Validate that\
-          \ features exist in Redis online store.\n    \"\"\"\n    import redis\n\n\
-          \    client = redis.Redis(\n        host=redis_host,\n        port=redis_port,\n\
-          \        password=redis_password,\n        decode_responses=True,\n    )\n\
-          \n    # Get sample keys\n    pattern = f\"feast:{entity_type}:*\"\n    keys\
-          \ = list(client.scan_iter(pattern, count=sample_size))\n\n    if not keys:\n\
-          \        raise RuntimeError(f\"No features found in Redis for pattern: {pattern}\"\
-          )\n\n    # Check first few keys\n    for key in keys[:5]:\n        features\
-          \ = client.hgetall(key)\n        print(f\"Key: {key}, Features: {len(features)}\"\
-          )\n        if not features:\n            raise RuntimeError(f\"Empty features\
-          \ for key: {key}\")\n\n    print(f\"Validated {len(keys)} feature keys for\
-          \ entity: {entity_type}\")\n    return \"VALIDATED\"\n\n"
+          ,\n    redis_port: int = 6379,\n    redis_password: str = \"\",  # From\
+          \ K8s secret via Kubeflow UI or default empty\n) -> str:\n    \"\"\"\n \
+          \   Validate that features exist in Redis online store.\n    \"\"\"\n  \
+          \  import redis\n\n    client = redis.Redis(\n        host=redis_host,\n\
+          \        port=redis_port,\n        password=redis_password,\n        decode_responses=True,\n\
+          \    )\n\n    # Get sample keys\n    pattern = f\"feast:{entity_type}:*\"\
+          \n    keys = list(client.scan_iter(pattern, count=sample_size))\n\n    if\
+          \ not keys:\n        raise RuntimeError(f\"No features found in Redis for\
+          \ pattern: {pattern}\")\n\n    # Check first few keys\n    for key in keys[:5]:\n\
+          \        features = client.hgetall(key)\n        print(f\"Key: {key}, Features:\
+          \ {len(features)}\")\n        if not features:\n            raise RuntimeError(f\"\
+          Empty features for key: {key}\")\n\n    print(f\"Validated {len(keys)} feature\
+          \ keys for entity: {entity_type}\")\n    return \"VALIDATED\"\n\n"
         image: python:3.10-slim
     exec-validate-online-features-2:
       container:
@@ -263,19 +275,19 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef validate_online_features(\n    entity_type: str = \"user\",\n\
           \    sample_size: int = 10,\n    redis_host: str = \"redis.platform.svc.cluster.local\"\
-          ,\n    redis_port: int = 6379,\n    redis_password: str = \"admin1234\"\
-          ,  # Default for K8s deployment\n) -> str:\n    \"\"\"\n    Validate that\
-          \ features exist in Redis online store.\n    \"\"\"\n    import redis\n\n\
-          \    client = redis.Redis(\n        host=redis_host,\n        port=redis_port,\n\
-          \        password=redis_password,\n        decode_responses=True,\n    )\n\
-          \n    # Get sample keys\n    pattern = f\"feast:{entity_type}:*\"\n    keys\
-          \ = list(client.scan_iter(pattern, count=sample_size))\n\n    if not keys:\n\
-          \        raise RuntimeError(f\"No features found in Redis for pattern: {pattern}\"\
-          )\n\n    # Check first few keys\n    for key in keys[:5]:\n        features\
-          \ = client.hgetall(key)\n        print(f\"Key: {key}, Features: {len(features)}\"\
-          )\n        if not features:\n            raise RuntimeError(f\"Empty features\
-          \ for key: {key}\")\n\n    print(f\"Validated {len(keys)} feature keys for\
-          \ entity: {entity_type}\")\n    return \"VALIDATED\"\n\n"
+          ,\n    redis_port: int = 6379,\n    redis_password: str = \"\",  # From\
+          \ K8s secret via Kubeflow UI or default empty\n) -> str:\n    \"\"\"\n \
+          \   Validate that features exist in Redis online store.\n    \"\"\"\n  \
+          \  import redis\n\n    client = redis.Redis(\n        host=redis_host,\n\
+          \        port=redis_port,\n        password=redis_password,\n        decode_responses=True,\n\
+          \    )\n\n    # Get sample keys\n    pattern = f\"feast:{entity_type}:*\"\
+          \n    keys = list(client.scan_iter(pattern, count=sample_size))\n\n    if\
+          \ not keys:\n        raise RuntimeError(f\"No features found in Redis for\
+          \ pattern: {pattern}\")\n\n    # Check first few keys\n    for key in keys[:5]:\n\
+          \        features = client.hgetall(key)\n        print(f\"Key: {key}, Features:\
+          \ {len(features)}\")\n        if not features:\n            raise RuntimeError(f\"\
+          Empty features for key: {key}\")\n\n    print(f\"Validated {len(keys)} feature\
+          \ keys for entity: {entity_type}\")\n    return \"VALIDATED\"\n\n"
         image: python:3.10-slim
     exec-wait-for-spark-job:
       container:
@@ -313,21 +325,24 @@ deploymentSpec:
           \n    start_time = time.time()\n    timeout_seconds = timeout_minutes *\
           \ 60\n\n    while True:\n        # Check elapsed time\n        elapsed =\
           \ time.time() - start_time\n        if elapsed > timeout_seconds:\n    \
-          \        raise TimeoutError(f\"Spark job {job_name} timed out after {timeout_minutes}\
-          \ minutes\")\n\n        # Get SparkApplication status\n        try:\n  \
-          \          spark_app = api.get_namespaced_custom_object(\n             \
-          \   group=\"sparkoperator.k8s.io\",\n                version=\"v1beta2\"\
-          ,\n                namespace=namespace,\n                plural=\"sparkapplications\"\
-          ,\n                name=job_name,\n            )\n            status = spark_app.get(\"\
-          status\", {}).get(\"applicationState\", {}).get(\"state\", \"UNKNOWN\")\n\
-          \            print(f\"Job {job_name} status: {status}\")\n\n           \
-          \ if status == \"COMPLETED\":\n                return \"COMPLETED\"\n  \
-          \          elif status == \"FAILED\":\n                error_msg = spark_app.get(\"\
-          status\", {}).get(\"applicationState\", {}).get(\"errorMessage\", \"Unknown\
-          \ error\")\n                raise RuntimeError(f\"Spark job failed: {error_msg}\"\
-          )\n\n        except client.ApiException as e:\n            print(f\"Error\
-          \ getting job status: {e}\")\n\n        # Wait before next check\n     \
-          \   time.sleep(30)\n\n"
+          \        raise TimeoutError(\n                f\"Spark job {job_name} timed\
+          \ out after {timeout_minutes} minutes\"\n            )\n\n        # Get\
+          \ SparkApplication status\n        try:\n            spark_app = api.get_namespaced_custom_object(\n\
+          \                group=\"sparkoperator.k8s.io\",\n                version=\"\
+          v1beta2\",\n                namespace=namespace,\n                plural=\"\
+          sparkapplications\",\n                name=job_name,\n            )\n  \
+          \          status = (\n                spark_app.get(\"status\", {})\n \
+          \               .get(\"applicationState\", {})\n                .get(\"\
+          state\", \"UNKNOWN\")\n            )\n            print(f\"Job {job_name}\
+          \ status: {status}\")\n\n            if status == \"COMPLETED\":\n     \
+          \           return \"COMPLETED\"\n            elif status == \"FAILED\"\
+          :\n                error_msg = (\n                    spark_app.get(\"status\"\
+          , {})\n                    .get(\"applicationState\", {})\n            \
+          \        .get(\"errorMessage\", \"Unknown error\")\n                )\n\
+          \                raise RuntimeError(f\"Spark job failed: {error_msg}\")\n\
+          \n        except client.ApiException as e:\n            print(f\"Error getting\
+          \ job status: {e}\")\n\n        # Wait before next check\n        time.sleep(30)\n\
+          \n"
         image: python:3.10-slim
 pipelineInfo:
   description: Compute batch features from raw events and write to offline/online

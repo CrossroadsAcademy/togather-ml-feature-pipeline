@@ -43,6 +43,7 @@ class RedisSink:
     """
     Redis sink for storing session features.
 
+    Uses connection pooling for efficient connection management.
     Writes features as Redis hashes with TTL for automatic expiration.
 
     Key pattern: {prefix}:{user_id}:{session_id}
@@ -58,34 +59,68 @@ class RedisSink:
 
     def __init__(self, config: RedisSinkConfig | None = None):
         self.config = config or RedisSinkConfig.from_env()
+        self._pool: redis.ConnectionPool | None = None
         self._client: redis.Redis | None = None
         self._connected = False
         # Lazy initialization - don't connect in constructor
 
     def _ensure_connected(self) -> bool:
-        """Ensure Redis client is connected. Returns True if connected."""
+        """Ensure Redis client is connected using connection pool. Returns True if connected."""
         if self._connected and self._client:
             return True
 
         try:
-            self._client = redis.Redis(
-                host=self.config.host,
-                port=self.config.port,
-                db=self.config.db,
-                password=self.config.password,
-                socket_timeout=self.config.connection_timeout,
-                decode_responses=True,
-            )
+            # Create connection pool if not exists
+            if self._pool is None:
+                self._pool = redis.ConnectionPool(
+                    host=self.config.host,
+                    port=self.config.port,
+                    db=self.config.db,
+                    password=self.config.password,
+                    max_connections=20,  # Limit max connections
+                    socket_timeout=self.config.connection_timeout,
+                    socket_connect_timeout=self.config.connection_timeout,
+                    retry_on_timeout=True,
+                    decode_responses=True,
+                )
+
+            # Create client from pool
+            self._client = redis.Redis(connection_pool=self._pool)
+
             # Test connection
             self._client.ping()
             self._connected = True
-            print(f"Redis sink connected: {self.config.host}:{self.config.port}")
+            print(f"Redis sink connected (pooled): {self.config.host}:{self.config.port}")
             return True
         except redis.ConnectionError as e:
             print(f"Redis connection failed (will retry): {e}")
             self._client = None
             self._connected = False
             return False
+
+    def is_healthy(self) -> tuple[bool, str]:
+        """Check if Redis connection is healthy. Used by health check server."""
+        try:
+            if not self._ensure_connected() or self._client is None:
+                return False, "Not connected"
+
+            # Ping to verify connection is alive
+            self._client.ping()
+
+            # Get memory info for diagnostics
+            info = self._client.info("memory")
+            used_memory_mb = info.get("used_memory", 0) / 1024 / 1024
+
+            # Check pool stats if available
+            pool_info = ""
+            if self._pool:
+                in_use = len(self._pool._in_use_connections)
+                available = len(self._pool._available_connections)
+                pool_info = f", pool: {in_use} in-use, {available} available"
+
+            return True, f"Connected, memory: {used_memory_mb:.1f}MB{pool_info}"
+        except Exception as e:
+            return False, str(e)
 
     def _compute_hash(self, features: dict[str, Any]) -> str:
         """Compute hash of features for change detection."""
@@ -258,9 +293,14 @@ class RedisSink:
         return bool(result)
 
     def close(self) -> None:
-        """Close Redis connection."""
+        """Close Redis connection and pool."""
         if self._client:
             self._client.close()
             self._client = None
-            self._connected = False
-            print("Redis connection closed")
+
+        if self._pool:
+            self._pool.disconnect()
+            self._pool = None
+
+        self._connected = False
+        print("Redis connection and pool closed")

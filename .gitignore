@@ -81,5 +81,8 @@ savepoints/
 *.tar
 *.zip
 
+#test
+scripts/demo_test.py
+
 #Example test scripts
 examples/

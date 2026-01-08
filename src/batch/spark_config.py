@@ -26,19 +26,13 @@ class SparkConfig:
 
     # MinIO/S3 settings (used for both raw events and offline feature store)
     s3_endpoint: str = field(default_factory=lambda: settings.minio.endpoint_url)
-    # Credentials from env vars, with K8s fallback when Spark Operator doesn't inject secrets properly
+    # Credentials from env vars (injected via K8s secrets)
     s3_access_key: str | None = field(
-        default_factory=lambda: (
-            os.getenv("AWS_ACCESS_KEY_ID")
-            or os.getenv("MINIO_ACCESS_KEY")
-            or ("minioadmin" if os.getenv("KUBERNETES_SERVICE_HOST") else None)  # K8s fallback
-        )
+        default_factory=lambda: (os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MINIO_ACCESS_KEY"))
     )
     s3_secret_key: str | None = field(
         default_factory=lambda: (
-            os.getenv("AWS_SECRET_ACCESS_KEY")
-            or os.getenv("MINIO_SECRET_KEY")
-            or ("minioadmin123" if os.getenv("KUBERNETES_SERVICE_HOST") else None)  # K8s fallback
+            os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("MINIO_SECRET_KEY")
         )
     )
     s3_path_style_access: bool = True
@@ -98,7 +92,7 @@ def create_spark_session(config: SparkConfig | None = None) -> SparkSession:
         )
         builder = builder.config(
             "spark.hadoop.fs.s3a.endpoint",
-            "http://minio-0.minio.platform.svc.cluster.local:9000",
+            "http://minio.platform.svc.cluster.local:9000",
         )
     else:
         builder = builder.config("spark.hadoop.fs.s3a.endpoint", f"http://{config.s3_endpoint}")
@@ -128,8 +122,8 @@ def create_spark_session(config: SparkConfig | None = None) -> SparkSession:
 
     builder = (
         builder
-        # Parquet optimization
-        .config("spark.sql.parquet.mergeSchema", "true")
+        # Parquet optimization (mergeSchema=false to avoid schema conflicts across different writes)
+        .config("spark.sql.parquet.mergeSchema", "false")
         .config("spark.sql.parquet.filterPushdown", "true")
         .config("spark.sql.parquet.compression.codec", "snappy")
         # Hive partition discovery
