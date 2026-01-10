@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.streaming.kafka_consumer import EventProcessor, NonRetryableException
-from src.streaming.schema_registry import (
-    MessageValidator,  # type: ignore
+from src.streaming.schema_registry import (  # type: ignore[attr-defined]
+    MessageValidator,
     ProtobufDeserializer,
     SchemaRegistryClient,
 )

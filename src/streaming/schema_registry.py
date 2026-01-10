@@ -217,7 +217,7 @@ class ProtobufSerializer:
 
             # Create Confluent wire format: magic byte + schema ID + message
             header = struct.pack(">bI", MAGIC_BYTE, schema_id)
-            result = header + message_bytes
+            result: bytes = header + message_bytes
 
             protobuf_serialization.labels(operation="serialize", status="success").inc()
 

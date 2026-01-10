@@ -9,16 +9,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class KafkaSettings(BaseSettings):
     """Kafka configuration settings following best practices."""
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+    )
+
     bootstrap_servers: str = Field(default="localhost:9092", alias="KAFKA_BOOTSTRAP_SERVERS")
     consumer_group: str = Field(default="app-events-consumer", alias="KAFKA_CONSUMER_GROUP")
-    topics: list[str] = Field(
-        default=[
-            "user.account",
-            "user.profile",
-            "experience",
-            "engagement",
-            "location.streams",
-        ],
+    # topics stored as comma-separated string to avoid pydantic-settings JSON parsing
+    topics: str = Field(
+        default="user.account,user.profile,experience,engagement,location.streams",
         alias="KAFKA_TOPICS",
     )
     auto_offset_reset: str = Field(default="latest", alias="KAFKA_AUTO_OFFSET_RESET")
@@ -36,6 +36,11 @@ class KafkaSettings(BaseSettings):
     sasl_username: str | None = Field(default=None, alias="KAFKA_SASL_USERNAME")
     sasl_password: str | None = Field(default=None, alias="KAFKA_SASL_PASSWORD")
     ssl_ca_location: str | None = Field(default=None, alias="KAFKA_SSL_CA_LOCATION")
+
+    @property
+    def topics_list(self) -> list[str]:
+        """Get topics as a list (parses comma-separated string)."""
+        return [t.strip() for t in self.topics.split(",") if t.strip()]
 
 
 class SchemaRegistrySettings(BaseSettings):
