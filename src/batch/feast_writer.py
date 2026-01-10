@@ -50,13 +50,6 @@ class FeastWriterConfig:
             redis_host = "redis.platform.svc.cluster.local"
             logger.info("Detected K8s environment. Switching Redis host to internal service DNS.")
 
-        # Fallback for Redis password in K8s (Spark Operator doesn't properly inject secretKeyRef env vars)
-        if is_k8s and not redis_password:
-            redis_password = (
-                "admin1234"  # TODO: migrate to proper secrets once env var injection is fixed
-            )
-            logger.info("Using fallback Redis password for K8s environment.")
-
         return cls(
             minio_endpoint=os.getenv("MINIO_ENDPOINT_URL", settings.minio.endpoint_url),
             minio_access_key=os.getenv("MINIO_ACCESS_KEY", settings.minio.access_key_id),
