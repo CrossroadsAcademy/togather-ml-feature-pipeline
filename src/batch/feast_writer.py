@@ -11,6 +11,7 @@ Handles incremental updates with upsert logic.
 import os
 from dataclasses import dataclass
 from datetime import date
+from typing import cast
 
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
@@ -115,7 +116,7 @@ class FeastFeatureWriter:
             # Prepare DataFrame for Parquet
             df = self._prepare_for_parquet(df)
 
-            record_count = df.count()
+            record_count = cast(int, df.count())
             ctx.set_attribute("record_count", record_count)
 
             try:
