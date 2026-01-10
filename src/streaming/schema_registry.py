@@ -165,9 +165,7 @@ class SchemaRegistryClient:
 
             if response.status_code == 200:
                 result = response.json().get("id")
-                if result is not None:
-                    return int(result)
-                return None
+                return int(result) if result is not None else None
             else:
                 response.raise_for_status()
 
@@ -267,7 +265,7 @@ class ProtobufDeserializer:
             self.logger.warning(f"Invalid magic byte: {data[0]}, expected {MAGIC_BYTE}")
             return None
 
-        schema_id: int = struct.unpack(">I", data[1:5])[0]
+        schema_id = int(struct.unpack(">I", data[1:5])[0])
         return schema_id
 
     def deserialize(
@@ -362,6 +360,34 @@ class ProtobufDeserializer:
             return MessageToDict(message, preserving_proto_field_name=True), None
 
         return None, "Unknown message type"
+
+
+class MessageValidator:
+    """Validator for messages against Schema Registry."""
+
+    def __init__(self, schema_registry: SchemaRegistryClient):
+        self.schema_registry = schema_registry
+
+    def validate_message(self, message: dict[str, Any], topic: str) -> tuple[bool, str | None]:
+        """
+        Validate message against schema.
+
+        Args:
+            message: Message data
+            topic: Kafka topic name
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        # In a real implementation, we would validate against the schema
+        # For now, we'll just check if the message is a non-empty dict
+        if not isinstance(message, dict):
+            return False, "Message must be a dictionary"
+
+        if not message:
+            return False, "Message cannot be empty"
+
+        return True, None
 
 
 # Topic to subject naming conventions
