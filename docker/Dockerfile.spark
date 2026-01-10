@@ -1,9 +1,6 @@
-# =============================================================================
 # Spark Batch Job Docker Image
-# =============================================================================
 # Based on official Spark image with Python dependencies for batch processing
 # Includes hadoop-aws for S3A/MinIO filesystem support
-# =============================================================================
 
 FROM spark:3.5.3-scala2.12-java17-python3-ubuntu
 
@@ -23,20 +20,13 @@ RUN curl -L -o /opt/spark/jars/hadoop-aws-3.3.4.jar \
 # Set working directory
 WORKDIR /opt/spark/work-dir
 
-# =============================================================================
 # LAYER CACHING OPTIMIZATION
-# =============================================================================
-# Copy dependency file first - this layer is cached unless requirements.txt changes
-# This means code changes WON'T trigger dependency reinstallation!
-# =============================================================================
 COPY docker/requirements-spark.txt /tmp/requirements-spark.txt
 
 # Install Python dependencies (cached unless requirements.txt changes)
 RUN pip3 install --no-cache-dir -r /tmp/requirements-spark.txt
 
-# =============================================================================
-# Copy source code LAST (changes frequently, but doesn't invalidate deps layer)
-# =============================================================================
+# Copy source code LAST
 COPY src/ ./src/
 COPY feast_repo/ ./feast_repo/
 

@@ -3,8 +3,6 @@ Event Envelope Parser for Flink.
 
 Uses togather-event-sdk for protobuf parsing exclusively.
 Expects raw bytes (passed through ISO-8859-1 encoding from Flink).
-
-This parser uses only the event types verified in production Kafka.
 """
 
 from typing import Any
@@ -70,7 +68,7 @@ if SDK_AVAILABLE:
 
     print("[Parser] togather-event-sdk loaded successfully")
 
-    # Build event type mapping (only verified events from production)
+    # Build event type mapping
     PAYLOAD_CLASSES = {
         # User events
         "user.v1.UserAccountCreated": UserAccountCreated,
@@ -105,7 +103,7 @@ def parse_kafka_message(raw_string: str) -> dict[str, Any]:
     if not raw_string:
         return {"_parse_error": "Empty message"}
 
-    # Protobuf parsing using SDK (no JSON fallback)
+    # Protobuf parsing using SDK
     try:
         if not SDK_AVAILABLE:
             return {"_parse_error": "togather-event-sdk not available"}
@@ -127,7 +125,7 @@ def parse_kafka_message(raw_string: str) -> dict[str, Any]:
             # Add hex dump for debugging
             hex_dump = raw_bytes.hex()[:100]
             print(f"[Parser] ERROR: SDK failed to parse envelope. Error: {e}, Hex: {hex_dump}")
-            # Still try to return some info (manual parse fallback for internal visibility)
+            # manual parse fallback for internal visibility
             return {
                 "_parse_error": f"SDK envelope parse failed: {str(e)}",
                 "_hex": hex_dump,
@@ -191,7 +189,7 @@ def get_user_id_from_event(event: dict[str, Any]) -> str | None:
     for tag in ["2", "1", "user_id", "userId", "id"]:
         val = event.get(tag)
         if val and isinstance(val, str) and (val.startswith("user") or len(val) >= 20):
-            return val
+            return str(val)
 
     return None
 
@@ -205,7 +203,9 @@ def get_timestamp_from_event(event: dict[str, Any]) -> int | None:
         if event.get(field):
             val = event[field]
             try:
-                if isinstance(val, (int | float)):
+                if isinstance(val, int):
+                    return val
+                elif isinstance(val, float):
                     return int(val)
                 elif isinstance(val, str) and val.isdigit():
                     return int(val)

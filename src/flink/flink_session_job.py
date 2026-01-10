@@ -59,8 +59,9 @@ class StatusLogger:
     Useful for detecting when no events are flowing from upstream.
     """
 
-    _instance = None
+    _instance: "StatusLogger | None" = None
     _lock = threading.Lock()
+    _initialized: bool = False
 
     def __new__(cls):
         """Singleton pattern to ensure one logger per job."""

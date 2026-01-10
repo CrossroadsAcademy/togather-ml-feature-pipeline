@@ -27,7 +27,7 @@ RUN curl -L -o /opt/flink/lib/flink-connector-kafka-3.2.0-1.19.jar \
     https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.6.1/kafka-clients-3.6.1.jar
 
 # Install S3 filesystem plugin for checkpoint storage
-# The plugin must be in the plugins directory (not lib)
+# The plugin must be in the plugins directory
 RUN mkdir -p /opt/flink/plugins/s3-fs-hadoop && \
     curl -L -o /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-1.19.1.jar \
     https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.19.1/flink-s3-fs-hadoop-1.19.1.jar

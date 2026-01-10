@@ -90,6 +90,12 @@ def main():
             experience_features_df = None
 
         # 2. Generate Two-Tower Data
+
+        # 2. Generate Two-Tower Data
+        if user_features_df is None or experience_features_df is None:
+            logger.error("Cannot generate training data without user and experience features")
+            raise ValueError("user_features_df and experience_features_df are required")
+
         logger.info("Generating Two-Tower training data")
         two_tower_df = create_two_tower_training_data(
             feedback_df=feedback_df,

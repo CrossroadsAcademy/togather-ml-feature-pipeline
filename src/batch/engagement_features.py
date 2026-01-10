@@ -37,9 +37,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# =============================================================================
 # Constants (from feed.v1.EventType proto)
-# =============================================================================
 
 
 class EventType:
@@ -57,9 +55,7 @@ class EventType:
     NEGATIVE = "EVENT_TYPE_NEGATIVE"
 
 
-# =============================================================================
 # Configuration
-# =============================================================================
 
 
 @dataclass
@@ -79,9 +75,7 @@ class EngagementFeaturesConfig:
     action_rate_smoothing: int = 5
 
 
-# =============================================================================
 # User Engagement Features
-# =============================================================================
 
 
 def aggregate_user_engagement_features(
@@ -273,9 +267,7 @@ def _fill_user_defaults(df: DataFrame) -> DataFrame:
     return df
 
 
-# =============================================================================
 # Experience Engagement Features
-# =============================================================================
 
 
 def aggregate_experience_engagement_features(

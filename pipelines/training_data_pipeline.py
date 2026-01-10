@@ -66,15 +66,14 @@ def submit_training_data_job(
                 feature_bucket,
             ],
             "sparkVersion": "3.5.0",
-            # S3/MinIO Config
+            # S3A/MinIO configuration - credentials from K8s secrets via env vars
             "sparkConf": {
-                "spark.hadoop.fs.s3a.endpoint": "http://minio-0.minio.platform.svc.cluster.local:9000",
+                "spark.hadoop.fs.s3a.endpoint": "http://minio.platform.svc.cluster.local:9000",
                 "spark.hadoop.fs.s3a.path.style.access": "true",
                 "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
                 "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
-                # Credentials (TODO: Secrets)
-                "spark.hadoop.fs.s3a.access.key": "minioadmin",
-                "spark.hadoop.fs.s3a.secret.key": "minioadmin123",
+                # Use environment variables for credentials (injected from K8s secrets below)
+                "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",
                 "spark.eventLog.enabled": "false",
             },
             "restartPolicy": {
@@ -87,13 +86,28 @@ def submit_training_data_job(
                 "memory": "1g",
                 "serviceAccount": "spark",
                 "env": [
-                    # Credentials env vars for consistency
+                    {
+                        "name": "AWS_ACCESS_KEY_ID",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                "name": "spark-s3-credentials",
+                                "key": "AWS_ACCESS_KEY_ID",
+                            }
+                        },
+                    },
+                    {
+                        "name": "AWS_SECRET_ACCESS_KEY",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                "name": "spark-s3-credentials",
+                                "key": "AWS_SECRET_ACCESS_KEY",
+                            }
+                        },
+                    },
                     {
                         "name": "MINIO_ENDPOINT_URL",
-                        "value": "http://minio-0.minio.platform.svc.cluster.local:9000",
+                        "value": "http://minio.platform.svc.cluster.local:9000",
                     },
-                    {"name": "AWS_ACCESS_KEY_ID", "value": "minioadmin"},
-                    {"name": "AWS_SECRET_ACCESS_KEY", "value": "minioadmin123"},
                 ],
             },
             "executor": {
@@ -101,8 +115,24 @@ def submit_training_data_job(
                 "memory": "1g",
                 "instances": 1,
                 "env": [
-                    {"name": "AWS_ACCESS_KEY_ID", "value": "minioadmin"},
-                    {"name": "AWS_SECRET_ACCESS_KEY", "value": "minioadmin123"},
+                    {
+                        "name": "AWS_ACCESS_KEY_ID",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                "name": "spark-s3-credentials",
+                                "key": "AWS_ACCESS_KEY_ID",
+                            }
+                        },
+                    },
+                    {
+                        "name": "AWS_SECRET_ACCESS_KEY",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                "name": "spark-s3-credentials",
+                                "key": "AWS_SECRET_ACCESS_KEY",
+                            }
+                        },
+                    },
                 ],
             },
         },
@@ -119,7 +149,7 @@ def submit_training_data_job(
         )
         print(f"Submitted SparkApplication: {job_name}")
     except client.ApiException as e:
-        raise RuntimeError(f"Failed to submit SparkApplication: {e}")  # noqa: B904
+        raise RuntimeError("Failed to submit SparkApplication") from e
 
     return job_name
 
@@ -189,9 +219,9 @@ def training_data_pipeline(
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     submit_op = submit_training_data_job(target_date=target_date, output_bucket=output_bucket)
-    submit_op.set_caching_options(False)
+    submit_op.set_caching_options(False)  # type: ignore
 
-    wait_for_spark_job(job_name=submit_op.output)
+    wait_op = wait_for_spark_job(job_name=submit_op.output)  # type: ignore # noqa: F841
 
 
 if __name__ == "__main__":

@@ -1,18 +1,9 @@
 #!/bin/bash
-# =============================================================================
+
 # Feast Setup Script
-# =============================================================================
+
 # Registers feature definitions and optionally materializes features.
-#
-# Usage:
-#   ./scripts/setup_feast.sh              # Just apply (register features)
-#   ./scripts/setup_feast.sh --materialize # Apply + materialize to online store
-#
-# Prerequisites:
-#   - feast installed (pip install feast[redis])
-#   - MinIO accessible (for registry storage)
-#   - Redis accessible (for online store)
-# =============================================================================
+
 
 set -e
 

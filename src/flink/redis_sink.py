@@ -109,7 +109,8 @@ class RedisSink:
 
             # Get memory info for diagnostics
             info = self._client.info("memory")
-            used_memory_mb = info.get("used_memory", 0) / 1024 / 1024
+            used_memory = info.get("used_memory") if isinstance(info, dict) else 0
+            used_memory_mb = (used_memory if used_memory else 0) / 1024 / 1024
 
             # Check pool stats if available
             pool_info = ""

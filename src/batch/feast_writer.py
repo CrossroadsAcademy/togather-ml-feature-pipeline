@@ -242,7 +242,7 @@ class FeastFeatureWriter:
         self,
         features: dict[str, DataFrame],
         target_date: date,
-    ) -> dict[str, int]:
+    ) -> dict[str, dict[str, int]]:
         """
         Write all feature DataFrames to both stores.
 

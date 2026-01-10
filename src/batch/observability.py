@@ -22,9 +22,7 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# =============================================================================
 # Prometheus Metrics
-# =============================================================================
 
 # Processing metrics
 BATCH_RECORDS_READ = Counter(
@@ -114,9 +112,7 @@ def set_job_status(job_name: str, status: int) -> None:
     BATCH_JOB_STATUS.labels(job_name=job_name).set(status)
 
 
-# =============================================================================
 # OpenTelemetry Tracing
-# =============================================================================
 
 
 @lru_cache(maxsize=1)
@@ -172,9 +168,7 @@ def get_tracer(name: str = "batch-feature-pipeline") -> trace.Tracer:
     return trace.get_tracer(name)
 
 
-# =============================================================================
 # Context Manager for Job Stages
-# =============================================================================
 
 
 class JobStageContext:

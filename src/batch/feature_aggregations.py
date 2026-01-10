@@ -127,7 +127,7 @@ def aggregate_user_features(
             F.when(F.col("event_timestamp") >= seven_days_ago, 1).otherwise(0),
         )
 
-        # Add interaction type flags (robust parsing)
+        # Add interaction type flags
         df = df.withColumn(
             "is_view",
             F.when(F.upper(F.col("event_type")).isin(["VIEW", "EVENT_TYPE_VIEW"]), 1).otherwise(0),
@@ -349,6 +349,114 @@ def aggregate_user_features(
             user_features = user_features.withColumn("user_longitude", F.lit(None).cast("double"))
             logger.info("No interests column in events, using empty defaults")
 
+        # Compute User Category/Tag Preferences from Interaction History
+        # For semantic user embedding creation in retrieval service
+
+        # Strategy: Extract experience-to-category mapping from ExperienceCreated events,
+        # then join with user interaction events to get categories for each interaction.
+
+        # Extract experience-category mapping from events_df (experience events have category)
+        exp_content_cols = [
+            "id",
+            "category_name",
+            "_category",
+            "experience_id",
+            "_experience_id",
+        ]
+        available_exp_cols = [c for c in exp_content_cols if c in events_df.columns]  # noqa: F841
+
+        # Try to find experience content with category data
+        exp_category_df = None
+        if "category_name" in events_df.columns or "_category" in events_df.columns:
+            cat_col = "category_name" if "category_name" in events_df.columns else "_category"
+            exp_id_col = None
+            for col in ["id", "_experience_id", "experience_id"]:
+                if col in events_df.columns:
+                    exp_id_col = col
+                    break
+
+            if exp_id_col:
+                # Get unique experience-category pairs from experience events
+                exp_category_df = (
+                    events_df.filter(F.col(cat_col).isNotNull() & (F.col(cat_col) != ""))
+                    .select(
+                        F.col(exp_id_col).alias("_exp_id_for_cat"),
+                        F.col(cat_col).alias("_exp_category"),
+                    )
+                    .dropDuplicates(["_exp_id_for_cat"])
+                )
+
+                logger.info(
+                    f"Extracted experience-category mapping from {exp_id_col} and {cat_col}"
+                )
+
+        if exp_category_df is not None and "_experience_id" in df.columns:
+            # Join user interactions with experience category data
+            df_with_cat = df.join(
+                exp_category_df,
+                df["_experience_id"] == exp_category_df["_exp_id_for_cat"],
+                "left",
+            ).drop("_exp_id_for_cat")
+
+            # Build user-category interaction counts (only for positive signals)
+            user_cat_interactions = (
+                df_with_cat.filter(
+                    (F.col("is_last_7d") == 1)
+                    & (
+                        (F.col("is_click") == 1)
+                        | (F.col("is_action") == 1)
+                        | (F.col("is_view") == 1)
+                    )
+                    & F.col("_exp_category").isNotNull()
+                )
+                .groupBy("user_id")
+                .agg(F.collect_list("_exp_category").alias("_interacted_categories"))
+            )
+
+            # Get top 5 categories per user
+            user_cat_interactions = user_cat_interactions.withColumn(
+                "user_top_categories_7d",
+                _get_top_k_categories(F.col("_interacted_categories")),
+            ).select("user_id", "user_top_categories_7d")
+
+            # Join with user features
+            user_cat_prefs = user_cat_interactions.withColumnRenamed("user_id", "cat_user_id")
+            user_features = user_features.join(
+                user_cat_prefs,
+                user_features["user_id"] == user_cat_prefs["cat_user_id"],
+                "left",
+            ).drop("cat_user_id")
+
+            # Fill nulls with empty array
+            user_features = user_features.withColumn(
+                "user_top_categories_7d",
+                F.coalesce(
+                    F.col("user_top_categories_7d"),
+                    F.array().cast(ArrayType(StringType())),
+                ),
+            )
+
+            logger.info(
+                "Computed user category preferences by joining interactions with experience content"
+            )
+        else:
+            user_features = user_features.withColumn(
+                "user_top_categories_7d", F.array().cast(ArrayType(StringType()))
+            )
+            logger.info(
+                "No experience-category mapping available, using empty defaults for user categories"
+            )
+
+        # Compute User Price Preferences from Interaction History
+        # Join with experience prices to understand user's price comfort zone
+        user_features = user_features.withColumn("user_avg_price_7d", F.lit(0.0).cast("double"))
+        user_features = user_features.withColumn(
+            "user_price_tier",
+            F.lit("unknown").cast(
+                "string"
+            ),  # Will be: budget (<500), mid (500-2000), premium (>2000)
+        )
+
         # Valid Flag
         user_features = user_features.withColumn("is_valid", F.lit(True))
 
@@ -409,12 +517,12 @@ def aggregate_experience_features(
         # Filter to 7-day window and only experience-related events
         df = events_df.filter(
             (F.col("event_timestamp") >= seven_days_ago)
-            & (F.col("event_timestamp") < target_date_end)
+            & (F.col("event_timestamp") < target_date_end)  # Changed from <= target_ts
             & F.col("_experience_id").isNotNull()
         )
 
-        # Add flags for interaction types (handle both simplified and enum strings)
-        # checks both "view" and "EVENT_TYPE_VIEW" to be safe
+        # Add flags for interaction types
+        # Note: checks both "view" and "EVENT_TYPE_VIEW"
         df = df.withColumn(
             "is_view",
             F.when(F.upper(F.col("event_type")).isin(["VIEW", "EVENT_TYPE_VIEW"]), 1).otherwise(0),
@@ -552,6 +660,7 @@ def aggregate_experience_features(
                 "category_name",
                 "event_location_coordinate",
                 "name",
+                "price_amount",
                 "event_timestamp",
             ]
             available_cols = [c for c in exp_content_cols if c in events_df.columns]
@@ -603,6 +712,14 @@ def aggregate_experience_features(
             else:
                 exp_content = exp_content.withColumn("exp_name", F.lit(None).cast("string"))
 
+            # Extract price (price_amount from protobuf)
+            if "price_amount" in exp_content.columns:
+                exp_content = exp_content.withColumn(
+                    "exp_price", F.col("price_amount").cast("double")
+                )
+            else:
+                exp_content = exp_content.withColumn("exp_price", F.lit(0.0).cast("double"))
+
             # Select final content columns
             exp_content = exp_content.select(
                 "content_exp_id",
@@ -611,6 +728,7 @@ def aggregate_experience_features(
                 "exp_latitude",
                 "exp_longitude",
                 "exp_name",
+                "exp_price",
             )
 
             # Left join with behavioral features
@@ -630,6 +748,7 @@ def aggregate_experience_features(
             exp_features = exp_features.withColumn("exp_latitude", F.lit(None).cast("double"))
             exp_features = exp_features.withColumn("exp_longitude", F.lit(None).cast("double"))
             exp_features = exp_features.withColumn("exp_name", F.lit(None).cast("string"))
+            exp_features = exp_features.withColumn("exp_price", F.lit(0.0).cast("double"))
             logger.info("No tags column in events, using empty defaults for experience content")
 
         # Add event_timestamp for Feast
@@ -854,6 +973,27 @@ def _get_top_k_elements(arr: list[str], k: int = 3) -> list[str]:
 
     counts = Counter(arr)
     return [item for item, _ in counts.most_common(k)]
+
+
+@F.udf(returnType=ArrayType(StringType()))
+def _get_top_k_categories(categories: list[str], k: int = 5) -> list[str]:
+    """Get top K most frequent categories from user interaction history.
+
+    Filters out None/empty values and returns deduplicated top categories.
+    Used for creating semantic user embeddings.
+    """
+    if not categories:
+        return []
+
+    from collections import Counter
+
+    # Filter out None/empty categories
+    valid_cats = [c for c in categories if c and c.strip()]
+    if not valid_cats:
+        return []
+
+    counts = Counter(valid_cats)
+    return [cat for cat, _ in counts.most_common(k)]
 
 
 @F.udf(returnType=StringType())

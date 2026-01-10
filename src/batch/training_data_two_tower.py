@@ -28,9 +28,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# =============================================================================
 # Configuration
-# =============================================================================
 
 
 @dataclass
@@ -54,9 +52,7 @@ class TwoTowerTrainingConfig:
     min_experience_impressions: int = 10  # Skip cold experiences
 
 
-# =============================================================================
 # Positive Sample Generation
-# =============================================================================
 
 
 def generate_positive_samples(
@@ -135,9 +131,7 @@ def generate_positive_samples(
         return positives
 
 
-# =============================================================================
 # Negative Sample Generation
-# =============================================================================
 
 
 def generate_negative_samples(
@@ -171,8 +165,8 @@ def generate_negative_samples(
             F.col("experience_id"),
         ).distinct()
 
-        # Cross join users x experiences (careful with large datasets!)
-        # In production, use sampling or approximate methods
+        # Cross join users x experiences
+        # TODO: use sampling or approximate methods
         user_exp_cross = users.crossJoin(
             experience_pool.sample(fraction=0.1)  # Sample 10% for efficiency
         )
@@ -207,9 +201,7 @@ def generate_negative_samples(
         return negatives
 
 
-# =============================================================================
 # Feature Joining
-# =============================================================================
 
 
 def create_two_tower_training_data(
@@ -334,7 +326,6 @@ def _add_cross_features(df: DataFrame) -> DataFrame:
     )
 
     # Interest-category match (requires interest and category IDs)
-    # This would require more complex logic with arrays
 
     return df
 

@@ -46,9 +46,7 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# =============================================================================
 # Data Readers
-# =============================================================================
 
 
 def read_user_profiles(spark: SparkSession, bucket: str = "user-profiles") -> DataFrame:
@@ -124,9 +122,7 @@ def read_recommendation_served(
         return df
 
 
-# =============================================================================
 # Main Pipeline
-# =============================================================================
 
 
 def run_real_feature_pipeline(
@@ -152,7 +148,7 @@ def run_real_feature_pipeline(
     job_start = time.time()
     set_job_status("real_feature_pipeline", 1)
 
-    result = {
+    result: dict[str, Any] = {
         "status": "success",
         "target_date": target_date.isoformat(),
         "features": {},
@@ -339,9 +335,7 @@ def run_real_feature_pipeline(
     return result
 
 
-# =============================================================================
 # CLI
-# =============================================================================
 
 
 def parse_args() -> argparse.Namespace:

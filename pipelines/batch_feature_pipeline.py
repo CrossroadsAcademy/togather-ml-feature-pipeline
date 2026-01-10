@@ -355,19 +355,19 @@ def batch_feature_pipeline(
     if not target_date:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Step 1: Submit Spark job
+    # Submit Spark job
     submit_task = submit_spark_job(
         target_date=target_date,
         mode=mode,
     )
     submit_task.set_caching_options(False)
 
-    # Step 2: Wait for completion
+    # Wait for completion
     wait_task = wait_for_spark_job(
         job_name=submit_task.output,
     )
 
-    # Step 3: Validate online features (Spark writes to Redis directly, no Feast materialize needed)
+    # Validate online features (Spark writes to Redis directly, no Feast materialize needed)
     validate_user = validate_online_features(entity_type="user")
     validate_user.after(wait_task)
 

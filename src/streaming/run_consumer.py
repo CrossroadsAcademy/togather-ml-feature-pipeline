@@ -96,7 +96,7 @@ async def run_consumer():
         # Graceful shutdown
         logger.info("Shutting down consumer...")
         await consumer.stop()
-        processor.shutdown()
+        await processor.shutdown()
 
         # Cancel consumer task
         consumer_task.cancel()

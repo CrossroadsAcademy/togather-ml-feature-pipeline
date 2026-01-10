@@ -156,7 +156,7 @@ class MinIOReader:
             sc = self.spark.sparkContext
             hadoop_conf = sc._jsc.hadoopConfiguration()
 
-            path = sc._jvm.org.apache.hadoop.fs.Path(self.base_path)
+            path = sc._jvm.org.apache.hadoop.fs.Path(self.base_path)  # type: ignore[union-attr]
             fs = path.getFileSystem(hadoop_conf)
 
             # Set a timeout for the list operation if possible? No, but we can log before.

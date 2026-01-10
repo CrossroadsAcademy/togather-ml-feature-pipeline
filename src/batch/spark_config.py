@@ -26,14 +26,12 @@ class SparkConfig:
 
     # MinIO/S3 settings (used for both raw events and offline feature store)
     s3_endpoint: str = field(default_factory=lambda: settings.minio.endpoint_url)
-    # Credentials from env vars (injected via K8s secrets)
+    # Credentials from env vars (injected by Spark Operator webhook from secretKeyRef)
     s3_access_key: str | None = field(
-        default_factory=lambda: (os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MINIO_ACCESS_KEY"))
+        default_factory=lambda: os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MINIO_ACCESS_KEY")
     )
     s3_secret_key: str | None = field(
-        default_factory=lambda: (
-            os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("MINIO_SECRET_KEY")
-        )
+        default_factory=lambda: os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("MINIO_SECRET_KEY")
     )
     s3_path_style_access: bool = True
 
@@ -50,7 +48,7 @@ class SparkConfig:
 
     # Observability
     enable_metrics: bool = True
-    enable_event_log: bool = False  # Disabled: hadoop-aws S3Guard issue
+    enable_event_log: bool = False
     event_log_dir: str = "s3a://spark-events/"
 
 
@@ -77,10 +75,6 @@ def create_spark_session(config: SparkConfig | None = None) -> SparkSession:
     builder = SparkSession.builder.appName(config.app_name).master(config.master)
 
     # S3A Endpoint Configuration Logic
-    # 1. If MINIO_ENDPOINT_URL env var is set, config.s3_endpoint is correct -> use it.
-    # 2. If it is NOT set, config.s3_endpoint defaults to "localhost:9000".
-    # 3. If "localhost:9000" and we are in K8s, force internal K8s service DNS.
-    # 4. Otherwise use the config value.
 
     val_from_env = os.getenv("MINIO_ENDPOINT_URL")
 

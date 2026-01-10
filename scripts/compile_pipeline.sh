@@ -1,10 +1,7 @@
 #!/bin/bash
-# =============================================================================
 # Compile Kubeflow Pipeline
-# =============================================================================
 # Compiles the batch_feature_pipeline.py to YAML for upload to Kubeflow.
 # Uses a temporary venv to avoid dependency conflicts with main project.
-# =============================================================================
 
 set -e
 

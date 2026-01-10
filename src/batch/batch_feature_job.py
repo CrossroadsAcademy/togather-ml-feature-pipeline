@@ -124,7 +124,7 @@ def run_batch_job(
         mode=mode,
     )
 
-    result = {
+    result: dict[str, Any] = {
         "status": "success",
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),

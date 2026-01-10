@@ -33,9 +33,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# =============================================================================
 # Configuration
-# =============================================================================
 
 
 @dataclass
@@ -48,7 +46,7 @@ class UserProfileFeaturesConfig:
     output_table: str = "user_profile_features"
 
     # Feature engineering params
-    max_interests: int = 20  # Cap interests to prevent explosion
+    max_interests: int = 20  # Cap interests
     default_social_score: int = 0
     default_gender: int = 0  # GENDER_UNSPECIFIED
 
@@ -59,9 +57,7 @@ class UserProfileFeaturesConfig:
     max_lng: float = 180.0
 
 
-# =============================================================================
 # Feature Extraction
-# =============================================================================
 
 
 def extract_user_profile_features(
@@ -161,9 +157,7 @@ def extract_user_profile_features(
         return df
 
 
-# =============================================================================
 # Interest Feature Engineering
-# =============================================================================
 
 
 def _extract_interest_features(df: DataFrame, max_interests: int) -> DataFrame:
@@ -203,9 +197,7 @@ def _extract_interest_features(df: DataFrame, max_interests: int) -> DataFrame:
     return df
 
 
-# =============================================================================
 # Derived Features
-# =============================================================================
 
 
 def _compute_derived_features(df: DataFrame, target_date: date) -> DataFrame:
@@ -251,9 +243,7 @@ def _compute_derived_features(df: DataFrame, target_date: date) -> DataFrame:
     return df
 
 
-# =============================================================================
 # Validation
-# =============================================================================
 
 
 def _validate_required_columns(df: DataFrame, required: list[str]) -> None:
@@ -314,9 +304,7 @@ def _apply_validation(df: DataFrame, config: UserProfileFeaturesConfig) -> DataF
     return df
 
 
-# =============================================================================
 # Schema Definition (for downstream consumers)
-# =============================================================================
 
 
 def get_user_profile_features_schema() -> T.StructType:

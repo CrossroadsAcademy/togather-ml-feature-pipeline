@@ -218,11 +218,11 @@ def _get_event_type(event: dict[str, Any]) -> str:
     # First, check for inner event_type (the actual action like View, Like, etc.)
     inner_type = event.get("event_type")
     if inner_type and isinstance(inner_type, str) and inner_type not in ("", "unknown"):
-        return inner_type
+        return str(inner_type)
 
     # Fallback to outer _event_type (proto message name, strip package prefix)
     raw_type = event.get("_event_type") or "unknown"
-    return raw_type.split(".")[-1] if "." in raw_type else raw_type
+    return str(raw_type.split(".")[-1]) if "." in str(raw_type) else str(raw_type)
 
 
 def _parse_timestamp(ts_value: str | int | None) -> datetime | None:
@@ -232,10 +232,11 @@ def _parse_timestamp(ts_value: str | int | None) -> datetime | None:
     try:
         # Handle integer timestamps (epoch milliseconds from protobuf)
         if isinstance(ts_value, (int | float)):
-            if ts_value > 1e12:  # Milliseconds
-                return datetime.fromtimestamp(ts_value / 1000.0)
+            ts_float = float(ts_value)
+            if ts_float > 1e12:  # Milliseconds
+                return datetime.fromtimestamp(ts_float / 1000.0)
             else:  # Seconds
-                return datetime.fromtimestamp(ts_value)
+                return datetime.fromtimestamp(ts_float)
 
         # Handle string timestamps (ISO format)
         if isinstance(ts_value, str):
