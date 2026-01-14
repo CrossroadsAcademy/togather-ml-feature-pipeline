@@ -409,26 +409,21 @@ def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> f
 
 
 def _extract_category_from_event(event: dict[str, Any]) -> str | None:
-    """Extract category from an event.
-
-    Tries multiple field names to handle different event types.
-    """
-    # Direct category field
     category = event.get("category_name") or event.get("category")
-    if category and isinstance(category, str):
-        return str(category)
+    if isinstance(category, str) and category:
+        return category
 
-    # Nested category object
     cat_obj = event.get("category")
-    if cat_obj and isinstance(cat_obj, dict):
+    if isinstance(cat_obj, dict):
         val = cat_obj.get("name") or cat_obj.get("id")
-        return str(val) if val else None
+        if isinstance(val, str) and val:
+            return val
 
-    # From experience context in recommendation events
     exp_context = event.get("experience_context") or event.get("experienceContext")
-    if exp_context and isinstance(exp_context, dict):
+    if isinstance(exp_context, dict):
         val = exp_context.get("category_name") or exp_context.get("category")
-        return str(val) if val else None
+        if isinstance(val, str) and val:
+            return val
 
     return None
 
@@ -464,20 +459,17 @@ def _extract_tags_from_event(event: dict[str, Any]) -> list[str]:
 
 
 def _extract_experience_id_from_event(event: dict[str, Any]) -> str | None:
-    """Extract experience ID from an event."""
-    # Direct fields
     exp_id = event.get("experience_id") or event.get("experienceId") or event.get("event_id")
-    if exp_id:
-        return str(exp_id)
+    if isinstance(exp_id, str) and exp_id:
+        return exp_id
 
-    # From recommendations (served events)
-    recommendations = event.get("recommendations") or []
-    if recommendations and isinstance(recommendations, list):
-        # Return first recommended experience
-        first_rec = recommendations[0] if recommendations else {}
+    recommendations = event.get("recommendations")
+    if isinstance(recommendations, list) and recommendations:
+        first_rec = recommendations[0]
         if isinstance(first_rec, dict):
             val = first_rec.get("experience_id") or first_rec.get("experienceId")
-            return str(val) if val else None
+            if isinstance(val, str) and val:
+                return val
 
     return None
 
