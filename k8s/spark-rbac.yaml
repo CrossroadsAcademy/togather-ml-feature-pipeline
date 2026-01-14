@@ -11,8 +11,8 @@ metadata:
   namespace: default
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "configmaps", "persistentvolumeclaims"]
-    verbs: ["create", "get", "watch", "list", "delete", "patch", "update"]
+    resources: ["pods", "pods/log", "pods/status", "services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["create", "get", "watch", "list", "delete", "deletecollection", "patch", "update"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list"]

@@ -416,17 +416,19 @@ def _extract_category_from_event(event: dict[str, Any]) -> str | None:
     # Direct category field
     category = event.get("category_name") or event.get("category")
     if category and isinstance(category, str):
-        return category
+        return str(category)
 
     # Nested category object
     cat_obj = event.get("category")
     if cat_obj and isinstance(cat_obj, dict):
-        return cat_obj.get("name") or cat_obj.get("id")
+        val = cat_obj.get("name") or cat_obj.get("id")
+        return str(val) if val else None
 
     # From experience context in recommendation events
     exp_context = event.get("experience_context") or event.get("experienceContext")
     if exp_context and isinstance(exp_context, dict):
-        return exp_context.get("category_name") or exp_context.get("category")
+        val = exp_context.get("category_name") or exp_context.get("category")
+        return str(val) if val else None
 
     return None
 
@@ -474,7 +476,8 @@ def _extract_experience_id_from_event(event: dict[str, Any]) -> str | None:
         # Return first recommended experience
         first_rec = recommendations[0] if recommendations else {}
         if isinstance(first_rec, dict):
-            return first_rec.get("experience_id") or first_rec.get("experienceId")
+            val = first_rec.get("experience_id") or first_rec.get("experienceId")
+            return str(val) if val else None
 
     return None
 

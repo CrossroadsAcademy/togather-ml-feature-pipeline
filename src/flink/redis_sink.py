@@ -379,6 +379,9 @@ class RedisSink:
             if not raw_features:
                 return None
 
+            if not isinstance(raw_features, dict):
+                return None
+
             # Parse JSON-encoded list fields
             features: dict[str, Any] = {}
             list_fields = {

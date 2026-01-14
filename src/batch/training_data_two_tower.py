@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-
 # Configuration
 
 
@@ -66,7 +65,7 @@ def generate_positive_samples(
     A positive sample is created when a user:
     - Clicks on an experience
     - Views an experience for > 3 seconds
-    - Takes an action (book, RSVP)
+    - Takes an action (book)
 
     Args:
         feedback_df: RecommendationFeedback events
@@ -165,7 +164,7 @@ def generate_negative_samples(
             F.col("experience_id"),
         ).distinct()
 
-        # Cross join users x experiences
+        # Cross join users x experiences (expensive with large datasets!)
         # TODO: use sampling or approximate methods
         user_exp_cross = users.crossJoin(
             experience_pool.sample(fraction=0.1)  # Sample 10% for efficiency
@@ -299,33 +298,59 @@ def create_two_tower_training_data(
 
 
 def _add_cross_features(df: DataFrame) -> DataFrame:
-    """Add cross features between user and experience."""
-    # Distance between user and experience (if both have location)
-    df = df.withColumn(
-        "cross_distance_km",
-        F.when(
-            F.col("user_has_location") & F.col("exp_has_location"),
-            _haversine_distance(
-                F.col("user_location_lat"),
-                F.col("user_location_lng"),
-                F.col("exp_location_lat"),
-                F.col("exp_location_lng"),
-            ),
-        ).otherwise(F.lit(None)),
+    """Add cross features between user and experience.
+
+    Gracefully handles missing columns by checking column existence first.
+    """
+    columns = df.columns
+
+    # Distance features (only if location columns exist)
+    has_location_cols = all(
+        col in columns
+        for col in [
+            "user_has_location",
+            "exp_has_location",
+            "user_location_lat",
+            "user_location_lng",
+            "exp_location_lat",
+            "exp_location_lng",
+        ]
     )
 
-    # Same city
-    df = df.withColumn(
-        "cross_same_city",
-        F.when(
-            (F.col("user_city").isNotNull())
-            & (F.col("exp_city").isNotNull())
-            & (F.lower(F.col("user_city")) == F.lower(F.col("exp_city"))),
-            F.lit(True),
-        ).otherwise(F.lit(False)),
-    )
+    if has_location_cols:
+        df = df.withColumn(
+            "cross_distance_km",
+            F.when(
+                F.col("user_has_location") & F.col("exp_has_location"),
+                _haversine_distance(
+                    F.col("user_location_lat"),
+                    F.col("user_location_lng"),
+                    F.col("exp_location_lat"),
+                    F.col("exp_location_lng"),
+                ),
+            ).otherwise(F.lit(None)),
+        )
+    else:
+        # Add placeholder column when location data unavailable
+        df = df.withColumn("cross_distance_km", F.lit(None).cast("double"))
+        logger.info("Skipping distance feature: location columns not available")
 
-    # Interest-category match (requires interest and category IDs)
+    # Same city feature (only if city columns exist)
+    has_city_cols = "user_city" in columns and "exp_city" in columns
+
+    if has_city_cols:
+        df = df.withColumn(
+            "cross_same_city",
+            F.when(
+                (F.col("user_city").isNotNull())
+                & (F.col("exp_city").isNotNull())
+                & (F.lower(F.col("user_city")) == F.lower(F.col("exp_city"))),
+                F.lit(True),
+            ).otherwise(F.lit(False)),
+        )
+    else:
+        df = df.withColumn("cross_same_city", F.lit(False))
+        logger.info("Skipping same_city feature: city columns not available")
 
     return df
 

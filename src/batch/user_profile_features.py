@@ -46,7 +46,7 @@ class UserProfileFeaturesConfig:
     output_table: str = "user_profile_features"
 
     # Feature engineering params
-    max_interests: int = 20  # Cap interests
+    max_interests: int = 20  # Cap interests to prevent explosion
     default_social_score: int = 0
     default_gender: int = 0  # GENDER_UNSPECIFIED
 
@@ -100,12 +100,34 @@ def extract_user_profile_features(
                 logger.warning(f"Column {col_name} missing from input schema, using NULL")
                 return F.lit(None)
 
+        # Helper to get coordinate column - tries flattened first, then nested struct
+        def _get_coordinate_col(base: str, coord: str) -> F.Column:
+            """Get coordinate from either nested struct or flattened column.
+
+            Old storage_sink flattening: current_address_coordinate_latitude
+            New lean extraction: current_address_coordinate_latitude
+            Nested struct access: current_address_coordinate.latitude
+            """
+            nested_path = f"{base}.{coord}"  # e.g., current_address_coordinate.latitude
+            flat_path = f"{base}_{coord}"  # e.g., current_address_coordinate_latitude
+
+            # Try flattened column first (new extraction), then nested struct
+            if flat_path in user_profiles_df.columns:
+                return F.col(flat_path)
+            else:
+                # Nested struct access - will return null if column doesn't exist
+                return F.col(nested_path)
+
         # Start with user ID
         df = user_profiles_df.select(
             F.col("id").alias("user_id"),
-            # Location features (coordinate structs seem to be consistently present)
-            F.col("current_address_coordinate.latitude").alias("user_location_lat"),
-            F.col("current_address_coordinate.longitude").alias("user_location_lng"),
+            # Location features - handle both nested struct and flattened field names
+            _get_coordinate_col("current_address_coordinate", "latitude").alias(
+                "user_location_lat"
+            ),
+            _get_coordinate_col("current_address_coordinate", "longitude").alias(
+                "user_location_lng"
+            ),
             # Flattened fields might be missing if source data didn't have them
             _get_col_or_null("current_address_city").alias("user_city"),
             _get_col_or_null("current_address_country").alias("user_country"),
@@ -175,7 +197,7 @@ def _extract_interest_features(df: DataFrame, max_interests: int) -> DataFrame:
         ).otherwise(F.array()),
     )
 
-    # Count of interests (useful for cold-start detection)
+    # Count of interests - for cold-start detection
     df = df.withColumn(
         "user_interest_count",
         F.size(F.col("user_interest_ids")),

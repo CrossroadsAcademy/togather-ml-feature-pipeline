@@ -10,7 +10,7 @@ Label scheme:
     - 0.3: View (dwell time 3-10s)
     - 0.5: Click
     - 0.7: View (dwell time > 10s)
-    - 1.0: Action (book, RSVP)
+    - 1.0: Action (book)
 
 Output includes context features (device, time, trigger) for contextual ranking.
 """
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     pass
 
 logger = structlog.get_logger(__name__)
+
 
 # Configuration
 
@@ -80,26 +81,96 @@ def assign_graded_labels(
     config = config or RankingTrainingConfig()
 
     with JobStageContext("assign_graded_labels") as ctx:
+        from pyspark.sql.types import (
+            ArrayType,
+            FloatType,
+            IntegerType,
+            StringType,
+            StructField,
+            StructType,
+        )
+
+        # Recommendations might be stored as native array OR JSON string (due to StorageSink changes)
+        if "recommendations" in served_df.columns:
+            # Check if it's a string and parse it
+            if dict(served_df.dtypes)["recommendations"] == "string":
+                rec_array_schema = ArrayType(
+                    StructType(
+                        [
+                            StructField("event_id", StringType()),
+                            StructField("ranking_score", FloatType()),
+                        ]
+                    )
+                )
+                served_df = served_df.withColumn(
+                    "recommendations", F.from_json("recommendations", rec_array_schema)
+                )
+
+            served_df = served_df.filter(F.col("recommendations").isNotNull())
+        else:
+            logger.warning("No 'recommendations' column in served_df")
+            # Return empty DataFrame with expected schema
+            empty_schema = StructType(
+                [
+                    StructField("request_id", StringType()),
+                    StructField("user_id", StringType()),
+                    StructField("experience_id", StringType()),
+                    StructField("position", IntegerType()),
+                    StructField("label", IntegerType()),
+                ]
+            )
+            return served_df.sparkSession.createDataFrame([], empty_schema)
+
+        # Use timestamp as fallback for served_at if not present
+        if "served_at" not in served_df.columns:
+            served_df = served_df.withColumn("served_at", F.col("timestamp"))
+
+        # Use default trigger if not present
+        if "trigger" not in served_df.columns:
+            served_df = served_df.withColumn("trigger", F.lit("UNKNOWN"))
+
         # Explode served recommendations
+        # recommendations is array of structs: [{event_id, ranking_score}, ...]
+        # Also extract session_id for fallback matching
         served_exploded = served_df.select(
             F.col("request_id"),
             F.col("user_id"),
+            F.col("session_id"),
             F.col("served_at"),
             F.col("trigger"),
+            F.col("timestamp").alias("served_timestamp"),
             F.posexplode(F.col("recommendations")).alias("position", "rec"),
         ).select(
             F.col("request_id"),
             F.col("user_id"),
+            F.col("session_id"),
             F.col("served_at"),
+            F.col("served_timestamp"),
             F.col("trigger"),
             F.col("position"),
             F.col("rec.event_id").alias("experience_id"),
             F.col("rec.ranking_score").alias("ranking_score"),
         )
 
-        # Aggregate feedback per (request_id, experience_id)
-        # Get the highest engagement level
-        feedback_agg = feedback_df.groupBy("request_id", "user_id").agg(
+        # Normalize experience_id: in RecommendationFeedback, event_id IS the experience_id
+        if "experience_id" not in feedback_df.columns and "event_id" in feedback_df.columns:
+            feedback_df = feedback_df.withColumn("experience_id", F.col("event_id"))
+            logger.info("Normalized event_id -> experience_id for feedback events")
+
+        # Dwell time column (flattened from view_data.dwell_time_ms -> view_data_dwell_time_ms)
+        dwell_time_col = F.coalesce(
+            F.col("view_data_dwell_time_ms"),
+            F.lit(0),
+        )
+
+        # Two-stage join strategy for feedback matching:
+        # 1. Primary: Join on (request_id, user_id, experience_id) - for ML "For You"
+        # 2. Fallback: Join on (session_id, user_id, experience_id) - for Explore/detail views
+
+        # Aggregate feedback - group by both request_id AND session_id for flexibility
+        feedback_agg = feedback_df.groupBy(
+            "request_id", "session_id", "user_id", "experience_id"
+        ).agg(
             # Did user click?
             F.max(
                 F.when(F.col("event_type") == EventType.CLICK, F.lit(1)).otherwise(F.lit(0))
@@ -112,16 +183,67 @@ def assign_graded_labels(
             F.max(
                 F.when(
                     F.col("event_type") == EventType.VIEW,
-                    F.col("view_data_dwell_time_ms"),
+                    dwell_time_col,
                 )
             ).alias("max_dwell_time_ms"),
+            # Track feedback timestamp for time-window filtering
+            F.min("timestamp").alias("first_feedback_ts"),
         )
 
-        # Join served with feedback
+        # Also create session-level aggregation for fallback
+        feedback_by_session = feedback_df.groupBy("session_id", "user_id", "experience_id").agg(
+            F.max(
+                F.when(F.col("event_type") == EventType.CLICK, F.lit(1)).otherwise(F.lit(0))
+            ).alias("sess_clicked"),
+            F.max(
+                F.when(F.col("event_type") == EventType.ACTION, F.lit(1)).otherwise(F.lit(0))
+            ).alias("sess_actioned"),
+            F.max(F.when(F.col("event_type") == EventType.VIEW, dwell_time_col)).alias(
+                "sess_max_dwell_time_ms"
+            ),
+        )
+
+        # Stage 1: Try joining on request_id (works for ML "For You" section)
         labeled = served_exploded.join(
-            feedback_agg,
-            on=["request_id", "user_id"],
+            feedback_agg.select(
+                "request_id",
+                "user_id",
+                "experience_id",
+                "clicked",
+                "actioned",
+                "max_dwell_time_ms",
+            ),
+            on=["request_id", "user_id", "experience_id"],
             how="left",
+        )
+
+        # Stage 2: For rows that didn't match, try session_id fallback
+        # This handles Explore section and detail view clicks
+        labeled = labeled.join(
+            feedback_by_session,
+            on=["session_id", "user_id", "experience_id"],
+            how="left",
+        )
+
+        # Coalesce: prefer request_id match, fall back to session_id match
+        labeled = (
+            labeled.withColumn(
+                "clicked",
+                F.coalesce(F.col("clicked"), F.col("sess_clicked"), F.lit(0)),
+            )
+            .withColumn(
+                "actioned",
+                F.coalesce(F.col("actioned"), F.col("sess_actioned"), F.lit(0)),
+            )
+            .withColumn(
+                "max_dwell_time_ms",
+                F.coalesce(
+                    F.col("max_dwell_time_ms"),
+                    F.col("sess_max_dwell_time_ms"),
+                    F.lit(0),
+                ),
+            )
+            .drop("sess_clicked", "sess_actioned", "sess_max_dwell_time_ms")
         )
 
         # Assign graded labels
@@ -204,11 +326,12 @@ def extract_context_features(
     """
     with JobStageContext("extract_context_features") as ctx:  # noqa: F841
         # Get device context from any feedback event per request
+        # Columns are flattened: device_context.platform -> device_context_platform
         context = feedback_df.groupBy("request_id").agg(
-            F.first("device_context.platform").alias("ctx_platform"),
-            F.first("device_context.app_version").alias("ctx_app_version"),
-            F.first("device_context.screen_width").alias("ctx_screen_width"),
-            F.first("device_context.screen_height").alias("ctx_screen_height"),
+            F.first("device_context_platform").alias("ctx_platform"),
+            F.first("device_context_app_version").alias("ctx_app_version"),
+            F.first("device_context_screen_width").alias("ctx_screen_width"),
+            F.first("device_context_screen_height").alias("ctx_screen_height"),
             F.first("client_timestamp").alias("ctx_client_timestamp"),
         )
 
@@ -260,8 +383,8 @@ def extract_context_features(
 def create_ranking_training_data(
     served_df: DataFrame,
     feedback_df: DataFrame,
-    user_features_df: DataFrame,
-    experience_features_df: DataFrame,
+    user_features_df: DataFrame | None,
+    experience_features_df: DataFrame | None,
     target_date: date,
     config: RankingTrainingConfig | None = None,
 ) -> DataFrame:
@@ -289,18 +412,20 @@ def create_ranking_training_data(
         labeled = extract_context_features(labeled, feedback_df)
 
         # Join user features
-        labeled = labeled.join(
-            user_features_df.drop("event_timestamp", "is_valid"),
-            on="user_id",
-            how="left",
-        )
+        if user_features_df is not None:
+            labeled = labeled.join(
+                user_features_df.drop("event_timestamp", "is_valid"),
+                on="user_id",
+                how="left",
+            )
 
         # Join experience features
-        labeled = labeled.join(
-            experience_features_df.drop("event_timestamp", "is_valid"),
-            on="experience_id",
-            how="left",
-        )
+        if experience_features_df is not None:
+            labeled = labeled.join(
+                experience_features_df.drop("event_timestamp", "is_valid"),
+                on="experience_id",
+                how="left",
+            )
 
         # Add position bias features
         if config.include_position_features:
@@ -366,44 +491,70 @@ def _add_position_features(df: DataFrame) -> DataFrame:
 
 
 def _add_cross_features(df: DataFrame) -> DataFrame:
-    """Add cross features between user and experience."""
-    # Distance (reuse from two_tower)
-    df = df.withColumn(
-        "cross_distance_km",
-        F.when(
-            F.col("user_has_location") & F.col("exp_has_location"),
-            _haversine_distance(
-                F.col("user_location_lat"),
-                F.col("user_location_lng"),
-                F.col("exp_location_lat"),
-                F.col("exp_location_lng"),
-            ),
-        ).otherwise(F.lit(None)),
+    """Add cross features between user and experience.
+
+    Gracefully handles missing columns by checking column existence first.
+    """
+    columns = df.columns
+
+    # Distance features (only if location columns exist)
+    has_location_cols = all(
+        col in columns
+        for col in [
+            "user_has_location",
+            "exp_has_location",
+            "user_location_lat",
+            "user_location_lng",
+            "exp_location_lat",
+            "exp_location_lng",
+        ]
     )
 
-    # Distance bucket
-    df = df.withColumn(
-        "cross_distance_bucket",
-        F.when(F.col("cross_distance_km").isNull(), F.lit("unknown"))
-        .when(F.col("cross_distance_km") <= 5, F.lit("nearby"))
-        .when(F.col("cross_distance_km") <= 20, F.lit("local"))
-        .when(F.col("cross_distance_km") <= 50, F.lit("regional"))
-        .otherwise(F.lit("distant")),
-    )
+    if has_location_cols:
+        df = df.withColumn(
+            "cross_distance_km",
+            F.when(
+                F.col("user_has_location") & F.col("exp_has_location"),
+                _haversine_distance(
+                    F.col("user_location_lat"),
+                    F.col("user_location_lng"),
+                    F.col("exp_location_lat"),
+                    F.col("exp_location_lng"),
+                ),
+            ).otherwise(F.lit(None)),
+        )
 
-    # Same city
-    df = df.withColumn(
-        "cross_same_city",
-        F.when(
-            (F.col("user_city").isNotNull())
-            & (F.col("exp_city").isNotNull())
-            & (F.lower(F.col("user_city")) == F.lower(F.col("exp_city"))),
-            F.lit(True),
-        ).otherwise(F.lit(False)),
-    )
+        # Distance bucket
+        df = df.withColumn(
+            "cross_distance_bucket",
+            F.when(F.col("cross_distance_km").isNull(), F.lit("unknown"))
+            .when(F.col("cross_distance_km") <= 5, F.lit("nearby"))
+            .when(F.col("cross_distance_km") <= 20, F.lit("local"))
+            .when(F.col("cross_distance_km") <= 50, F.lit("regional"))
+            .otherwise(F.lit("distant")),
+        )
+    else:
+        # Add placeholder columns when location data unavailable
+        df = df.withColumn("cross_distance_km", F.lit(None).cast("double"))
+        df = df.withColumn("cross_distance_bucket", F.lit("unknown"))
+        logger.info("Skipping distance features: location columns not available")
 
-    # Price match (user's typical vs experience price)
-    # This would require historical spend data
+    # Same city feature (only if city columns exist)
+    has_city_cols = "user_city" in columns and "exp_city" in columns
+
+    if has_city_cols:
+        df = df.withColumn(
+            "cross_same_city",
+            F.when(
+                (F.col("user_city").isNotNull())
+                & (F.col("exp_city").isNotNull())
+                & (F.lower(F.col("user_city")) == F.lower(F.col("exp_city"))),
+                F.lit(True),
+            ).otherwise(F.lit(False)),
+        )
+    else:
+        df = df.withColumn("cross_same_city", F.lit(False))
+        logger.info("Skipping same_city feature: city columns not available")
 
     return df
 

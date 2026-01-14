@@ -46,29 +46,34 @@ def main():
 
         logger.info("Reading events", start_date=str(start_date), end_date=str(end_date))
 
-        # Read Feedback and Served events together
         events_df = reader.read_events(
             start_date=start_date,
             end_date=end_date,
-            event_types=["recommendation_feedback_v1", "recommendation_served_v1"],
+            event_types=["recommendation_feedback_v1", "recommendation_served"],
         )
 
+        # Debug: Log unique partition_event_type values
+        try:
+            partition_types = events_df.select("partition_event_type").distinct().collect()
+            logger.info(
+                "Found partition types in events_df",
+                partition_types=[row["partition_event_type"] for row in partition_types],
+            )
+        except Exception as e:
+            logger.warning(f"Could not get partition types: {e}")
+
         # Filter for specific event types
-        # Note: Event types in the data might be normalized or just the partition value.
-        # MinIOReader likely sets 'event_type' column.
-        feedback_df = events_df.filter(F.col("event_type") == "recommendation_feedback_v1")
-        served_df = events_df.filter(F.col("event_type") == "recommendation_served_v1")
+        feedback_df = events_df.filter(
+            F.col("partition_event_type") == "recommendation_feedback_v1"
+        )
+        served_df = events_df.filter(F.col("partition_event_type") == "recommendation_served")
 
-        # Read Features (User & Experience) from where batch pipeline wrote them
-        # Assuming batch pipeline writes to minio://feature-store/offline/...
-        # For now, let's re-compute them or read from raw events if features aren't persisted offline
-        # Industrial practice: Read from Feature Store (Offline).
-        # Since we don't have a formal offline feature store reader yet, we'll fast-track by passing None
-        # (the generator functions currently expect features, let's verify if they are mandatory)
-
-        # Checking create_two_tower_training_data signature:
-        # def create_two_tower_training_data(feedback_df, user_features_df, experience_features_df, ...)
-        # It requires user_features_df and experience_features_df.
+        # Debug: Log counts before proceeding
+        logger.info(
+            "Event count by type",
+            feedback_count=feedback_df.count(),
+            served_count=served_df.count(),
+        )
 
         feature_base_path = "s3a://feast-offline-store"
 
@@ -89,40 +94,59 @@ def main():
             user_features_df = None
             experience_features_df = None
 
-        # 2. Generate Two-Tower Data
+        # 2. Generate Two-Tower Data (requires user/experience features)
+        if user_features_df is not None and experience_features_df is not None:
+            logger.info("Generating Two-Tower training data")
+            two_tower_df = create_two_tower_training_data(
+                feedback_df=feedback_df,
+                user_features_df=user_features_df,
+                experience_features_df=experience_features_df,
+                target_date=target_date,
+            )
 
-        # 2. Generate Two-Tower Data
-        if user_features_df is None or experience_features_df is None:
-            logger.error("Cannot generate training data without user and experience features")
-            raise ValueError("user_features_df and experience_features_df are required")
+            # Write to S3
+            tt_output_path = (
+                f"s3a://{args.output_bucket}/training/two_tower/date={args.target_date}"
+            )
+            two_tower_df.write.mode("overwrite").parquet(tt_output_path)
+            logger.info("Wrote Two-Tower data", path=tt_output_path, count=two_tower_df.count())
+        else:
+            logger.warning(
+                "Skipping Two-Tower training data generation - offline features not available. "
+                "Run batch_feature_job.py first to generate user/experience features."
+            )
 
-        logger.info("Generating Two-Tower training data")
-        two_tower_df = create_two_tower_training_data(
-            feedback_df=feedback_df,
-            user_features_df=user_features_df,
-            experience_features_df=experience_features_df,
-            target_date=target_date,
-        )
+        # 3. Generate Ranking Data (requires RecommendationServed events with proper schema)
+        # Check if served data is available and has required columns
+        served_columns = served_df.columns if served_df is not None else []
+        required_served_cols = ["request_id", "user_id", "recommendations"]
+        has_served_schema = all(col in served_columns for col in required_served_cols)
+        served_count = served_df.count() if served_df is not None else 0
 
-        # Write to S3
-        tt_output_path = f"s3a://{args.output_bucket}/training/two_tower/date={args.target_date}"
-        two_tower_df.write.mode("overwrite").parquet(tt_output_path)
-        logger.info("Wrote Two-Tower data", path=tt_output_path, count=two_tower_df.count())
+        if served_count > 0 and has_served_schema:
+            logger.info("Generating Ranking training data", served_count=served_count)
+            ranking_df = create_ranking_training_data(
+                served_df=served_df,
+                feedback_df=feedback_df,
+                user_features_df=user_features_df,
+                experience_features_df=experience_features_df,
+                target_date=target_date,
+            )
 
-        # 3. Generate Ranking Data
-        logger.info("Generating Ranking training data")
-        ranking_df = create_ranking_training_data(
-            served_df=served_df,
-            feedback_df=feedback_df,
-            user_features_df=user_features_df,
-            experience_features_df=experience_features_df,
-            target_date=target_date,
-        )
-
-        # Write to S3
-        rank_output_path = f"s3a://{args.output_bucket}/training/ranking/date={args.target_date}"
-        ranking_df.write.mode("overwrite").parquet(rank_output_path)
-        logger.info("Wrote Ranking data", path=rank_output_path, count=ranking_df.count())
+            # Write to S3
+            rank_output_path = (
+                f"s3a://{args.output_bucket}/training/ranking/date={args.target_date}"
+            )
+            ranking_df.write.mode("overwrite").parquet(rank_output_path)
+            logger.info("Wrote Ranking data", path=rank_output_path, count=ranking_df.count())
+        else:
+            logger.warning(
+                "Skipping Ranking training data generation",
+                reason="RecommendationServed events not available or missing required schema",
+                served_count=served_count,
+                available_columns=served_columns[:10] if served_columns else [],
+                required_columns=required_served_cols,
+            )
 
     except Exception as e:
         logger.error("Training data generation failed", error=str(e))

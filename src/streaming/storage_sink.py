@@ -159,7 +159,9 @@ class StorageSink:
                 return False, f"Bucket '{self.config.bucket_name}' not found"
 
             # List objects to verify read access (limit to 1)
-            objects = list(self._client.list_objects(self.config.bucket_name, max_keys=1))  # noqa: F841
+            objects_iter = self._client.list_objects(self.config.bucket_name)
+            # Just check if we can iterate (don't need to fetch all)
+            next(iter(objects_iter), None)
 
             # Get buffer stats
             total_buffered = sum(len(buf) for buf in self._buffer.values())

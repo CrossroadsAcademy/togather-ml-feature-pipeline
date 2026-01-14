@@ -29,13 +29,12 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
+from src.batch.observability import JobStageContext, record_metric
 from src.batch.validation import (
     add_quality_flags,
     compute_quality_metrics,
     validate_range,
 )
-from src.utils.metrics import record_metric
-from src.utils.tracing import JobStageContext
 
 if TYPE_CHECKING:
     pass
@@ -43,9 +42,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# =============================================================================
 # Configuration
-# =============================================================================
 
 
 @dataclass
@@ -71,9 +68,7 @@ class ExperienceFeaturesConfig:
     max_price: float = 1000000.0  # 1M cap for price
 
 
-# =============================================================================
 # Feature Extraction
-# =============================================================================
 
 
 def extract_experience_features(
@@ -117,6 +112,24 @@ def extract_experience_features(
                 logger.warning(f"Column {col_name} missing from input schema, using NULL")
                 return F.lit(None)
 
+        # Helper to get coordinate column - tries nested struct first, then flattened
+        def _get_coordinate_col(base: str, coord: str) -> F.Column:
+            """Get coordinate from either nested struct or flattened column.
+
+            Old storage_sink flattening: event_location_coordinate_latitude
+            New lean extraction: event_location_coordinate_latitude
+            Nested struct access: event_location_coordinate.latitude
+            """
+            nested_path = f"{base}.{coord}"  # e.g., event_location_coordinate.latitude
+            flat_path = f"{base}_{coord}"  # e.g., event_location_coordinate_latitude
+
+            # Try flattened column first (new extraction), then nested struct
+            if flat_path in experiences_df.columns:
+                return F.col(flat_path)
+            else:
+                # Nested struct access - will return null if column doesn't exist
+                return F.col(nested_path)
+
         df = experiences_df.select(
             F.col("id").alias("experience_id"),
             F.col("name").alias("exp_name"),
@@ -124,9 +137,9 @@ def extract_experience_features(
             # Category (Flattened)
             _get_col_or_null("category_id").alias("exp_category_id"),
             _get_col_or_null("category_name").alias("exp_category_name"),
-            # Location (Flattened)
-            F.col("event_location_coordinate.latitude").alias("exp_location_lat"),
-            F.col("event_location_coordinate.longitude").alias("exp_location_lng"),
+            # Location - handle both nested struct and flattened field names
+            _get_coordinate_col("event_location_coordinate", "latitude").alias("exp_location_lat"),
+            _get_coordinate_col("event_location_coordinate", "longitude").alias("exp_location_lng"),
             _get_col_or_null("event_location_city").alias("exp_city"),
             _get_col_or_null("event_location_country").alias("exp_country"),
             # Price
@@ -197,9 +210,7 @@ def extract_experience_features(
         return df
 
 
-# =============================================================================
 # Tag Feature Engineering
-# =============================================================================
 
 
 def _extract_tag_features(df: DataFrame, max_tags: int) -> DataFrame:
@@ -239,9 +250,7 @@ def _extract_tag_features(df: DataFrame, max_tags: int) -> DataFrame:
     return df
 
 
-# =============================================================================
 # Derived Features
-# =============================================================================
 
 
 def _compute_derived_features(
@@ -340,7 +349,7 @@ def _compute_derived_features(
         ).otherwise(F.lit(0)),
     )
 
-    # Description length (proxy for quality)
+    # Description length
     df = df.withColumn(
         "exp_description_length",
         F.coalesce(F.length(F.col("exp_description")), F.lit(0)),
@@ -349,9 +358,7 @@ def _compute_derived_features(
     return df
 
 
-# =============================================================================
 # Validation
-# =============================================================================
 
 
 def _validate_required_columns(df: DataFrame, required: list[str]) -> None:
@@ -396,9 +403,7 @@ def _apply_validation(df: DataFrame, config: ExperienceFeaturesConfig) -> DataFr
     return df
 
 
-# =============================================================================
 # Schema Definition
-# =============================================================================
 
 
 def get_experience_features_schema() -> T.StructType:

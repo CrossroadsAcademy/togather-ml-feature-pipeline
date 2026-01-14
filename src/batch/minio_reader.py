@@ -94,19 +94,31 @@ class MinIOReader:
             try:
                 # Extract event_type from path: s3a://.../event_type=abc maps to abc
                 event_type_val = partition_path.split("event_type=")[-1].strip("/")
+                try:
+                    df = (
+                        self.spark.read.option("mergeSchema", "true")
+                        .option(
+                            "recursiveFileLookup", "true"
+                        )  # Ensure that find files deep in subdirs
+                        .parquet(partition_path)
+                    )
+                    # Trigger schema validation
+                    _ = df.schema
+                except Exception as e:
+                    # Check for schema merge error
+                    err_str = str(e).upper()
+                    if "MERGE" in err_str or "INCOMPATIBLE" in err_str:
+                        self.logger.warning(
+                            f"Schema merge failed for {partition_path}, falling back to robust read. Error: {e}"
+                        )
+                        df = self._read_partition_robust(partition_path, event_type_val)
+                    else:
+                        raise e
 
-                # Read with simple path - explicitly target parquet files to avoid directory issues
-                # Do NOT use basePath option here to avoid "path must be absolute" conflicts
-                # Read recursively from the partition root
-                # This handles nested partitions (year=*/month=*/...) automatically
-                df = (
-                    self.spark.read.option("mergeSchema", "true")
-                    .option("recursiveFileLookup", "true")  # Ensure we find files deep in subdirs
-                    .parquet(partition_path)
-                    # Use a different name to avoid overwriting proto's event_type field
-                    # The proto's event_type contains values like EVENT_TYPE_VIEW, EVENT_TYPE_CLICK
-                    .withColumn("partition_event_type", F.lit(event_type_val))
-                )
+                # Use a different name to avoid overwriting proto's event_type field
+                # The proto's event_type contains values like EVENT_TYPE_VIEW, EVENT_TYPE_CLICK
+                df = df.withColumn("partition_event_type", F.lit(event_type_val))
+
                 dfs.append(df)
                 self.logger.debug(
                     f"Read partition: {partition_path} for event_type={event_type_val}"
@@ -143,6 +155,140 @@ class MinIOReader:
             self.logger.warning(f"Could not get sample count: {e}")
 
         return df
+
+    def _read_partition_robust(self, path: str, event_type_val: str) -> DataFrame:
+        """
+        Robustly read a partition causing schema merge errors by grouping files with compatible schemas.
+        """
+        self.logger.warning(f"Starting robust fallback read for {path}")
+
+        # 1. Discover all files
+        try:
+            file_paths_df = (
+                self.spark.read.format("binaryFile")
+                .option("pathGlobFilter", "*.parquet")
+                .option("recursiveFileLookup", "true")
+                .load(path)
+                .select("path")
+            )
+            found_files = [row.path for row in file_paths_df.collect()]
+        except Exception as e:
+            self.logger.warning(f"Binary file listing failed: {e}. Fallback to path.")
+            found_files = [path]
+
+        if not found_files:
+            self.logger.warning(f"No parquet files found via binaryFile reader in {path}")
+            return self.spark.createDataFrame([], schema="event_type STRING")
+
+        # 2. Group files by "Schema Signature" of complex columns
+        # Signature = Tuple of (col_name, is_array_or_struct) for all complex cols present
+        complex_cols = [
+            "interests",
+            "tags",
+            "recommendations",
+            "current_address_coordinate",
+            "event_location_coordinate",
+        ]
+
+        # Map: signature -> list of files
+        # Signature is a frozen set of (col, type_str) tuples, or similar.
+        file_groups: dict[tuple[tuple[str, str], ...], list[str]] = {}
+
+        for p in found_files:
+            try:
+                # Read schema only (lazy)
+                # Use mergeSchema=false to get exact file schema
+                schema = self.spark.read.option("mergeSchema", "false").parquet(p).schema
+
+                sig_parts = []
+                for col in complex_cols:
+                    if col in schema.names:
+                        dtype = schema[col].dataType
+                        if isinstance(dtype, F.ArrayType | F.StructType):
+                            sig_parts.append((col, "complex"))
+                        else:
+                            sig_parts.append((col, "simple"))  # String or other
+                    else:
+                        sig_parts.append((col, "missing"))
+
+                signature = tuple(sig_parts)
+
+                if signature not in file_groups:
+                    file_groups[signature] = []
+                file_groups[signature].append(p)
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to check schema for {p}: {e}. treating as separate group"
+                )
+                # Fallback: treat this file as unique group to handle individually
+                # Use tuple key to match dict type (unique per file)
+                error_sig: tuple[tuple[str, str], ...] = (("error", p),)
+                file_groups[error_sig] = [p]
+
+        self.logger.info(
+            f"Robust read: grouped {len(found_files)} files into {len(file_groups)} schema groups"
+        )
+
+        dfs_to_union = []
+
+        # 3. Process each group
+        for sig, files in file_groups.items():
+            if not files:
+                continue
+
+            try:
+                # Bulk read this group
+                # mergeSchema=true is safe here because we grouped by conflicting types
+                df_group = self.spark.read.option("mergeSchema", "true").parquet(*files)
+
+                # Apply normalization if needed
+                # can determine conversion needs from the signature (if it's a tuple)
+                # or just inspect the resulting DF schema
+
+                cols_to_convert = []
+                for col_name in complex_cols:
+                    if col_name in df_group.columns:
+                        dtype = df_group.schema[col_name].dataType
+                        if isinstance(dtype, F.ArrayType | F.StructType):
+                            cols_to_convert.append(col_name)
+
+                if cols_to_convert:
+                    # self.logger.info(f"Converting cols {cols_to_convert} to JSON for group {sig}")
+                    for c in cols_to_convert:
+                        df_group = df_group.withColumn(c, F.to_json(F.col(c)))
+
+                dfs_to_union.append(df_group)
+
+            except Exception as e:
+                self.logger.error(
+                    f"Bulk read failed for group {sig}: {e}. Falling back to iterative."
+                )
+                # Fallback to file-by-file for this failed group
+                for f in files:
+                    try:
+                        d = self.spark.read.parquet(f)
+                        for col_name in complex_cols:
+                            if col_name in d.columns and isinstance(
+                                d.schema[col_name].dataType, F.ArrayType | F.StructType
+                            ):
+                                d = d.withColumn(col_name, F.to_json(F.col(col_name)))
+                        dfs_to_union.append(d)
+                    except Exception:
+                        pass
+
+        if not dfs_to_union:
+            self.logger.warning(f"No data could be loaded from {path}")
+            return self.spark.createDataFrame([], schema="event_type STRING")
+
+        # 4. Union
+        full_df = dfs_to_union[0]
+        for other in dfs_to_union[1:]:
+            full_df = full_df.unionByName(other, allowMissingColumns=True)
+
+        # Add partition event type if missing
+        full_df = full_df.withColumn("partition_event_type", F.lit(event_type_val))
+        return full_df
 
     def _list_event_type_partitions(self, event_types: list[str] | None = None) -> list[str]:
         """

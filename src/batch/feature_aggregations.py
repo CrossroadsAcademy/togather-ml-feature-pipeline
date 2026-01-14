@@ -5,6 +5,7 @@ Computes user, experience, and session features from raw events
 with proper event_timestamp for Feast point-in-time joins.
 """
 
+import json
 from datetime import date
 from typing import Any
 
@@ -33,16 +34,24 @@ def _extract_interest_names(interests_array):
     if not interests_array:
         return []
     try:
+        data = interests_array
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                return []
+
         result = []
-        for item in interests_array:
-            if item is None:
-                continue
-            # Try attribute access first (Spark Row)
-            if hasattr(item, "name") and item.name:
-                result.append(str(item.name))
-            # Fall back to dict-style access
-            elif isinstance(item, dict) and item.get("name"):
-                result.append(str(item.get("name")))
+        if isinstance(data, list):
+            for item in data:
+                if item is None:
+                    continue
+                # Try attribute access first (Spark Row)
+                if hasattr(item, "name") and item.name:
+                    result.append(str(item.name))
+                # Fall back to dict-style access
+                elif isinstance(item, dict) and item.get("name"):
+                    result.append(str(item.get("name")))
         return result
     except (TypeError, AttributeError, Exception):
         return []
@@ -60,16 +69,24 @@ def _extract_tag_names(tags_array):
     if not tags_array:
         return []
     try:
+        data = tags_array
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                return []
+
         result = []
-        for item in tags_array:
-            if item is None:
-                continue
-            # Try attribute access first (Spark Row)
-            if hasattr(item, "name") and item.name:
-                result.append(str(item.name))
-            # Fall back to dict-style access
-            elif isinstance(item, dict) and item.get("name"):
-                result.append(str(item.get("name")))
+        if isinstance(data, list):
+            for item in data:
+                if item is None:
+                    continue
+                # Try attribute access first (Spark Row)
+                if hasattr(item, "name") and item.name:
+                    result.append(str(item.name))
+                # Fall back to dict-style access
+                elif isinstance(item, dict) and item.get("name"):
+                    result.append(str(item.get("name")))
         return result
     except (TypeError, AttributeError, Exception):
         return []
@@ -127,7 +144,7 @@ def aggregate_user_features(
             F.when(F.col("event_timestamp") >= seven_days_ago, 1).otherwise(0),
         )
 
-        # Add interaction type flags
+        # Add interaction type flags (robust parsing)
         df = df.withColumn(
             "is_view",
             F.when(F.upper(F.col("event_type")).isin(["VIEW", "EVENT_TYPE_VIEW"]), 1).otherwise(0),
@@ -303,18 +320,27 @@ def aggregate_user_features(
 
             # Extract location if available
             if "user_location_coord" in user_profiles.columns:
+                # Check type of user_location_coord
+                dq_type = user_profiles.schema["user_location_coord"].dataType
+                is_string = isinstance(dq_type, StringType)
+
+                lat_col = (
+                    F.get_json_object(F.col("user_location_coord"), "$.latitude")
+                    if is_string
+                    else F.col("user_location_coord").getItem("latitude")
+                )
+                lon_col = (
+                    F.get_json_object(F.col("user_location_coord"), "$.longitude")
+                    if is_string
+                    else F.col("user_location_coord").getItem("longitude")
+                )
+
                 user_profiles = user_profiles.withColumn(
                     "user_latitude",
-                    F.when(
-                        F.col("user_location_coord").isNotNull(),
-                        F.col("user_location_coord").getItem("latitude"),
-                    ),
+                    F.when(F.col("user_location_coord").isNotNull(), lat_col.cast("double")),
                 ).withColumn(
                     "user_longitude",
-                    F.when(
-                        F.col("user_location_coord").isNotNull(),
-                        F.col("user_location_coord").getItem("longitude"),
-                    ),
+                    F.when(F.col("user_location_coord").isNotNull(), lon_col.cast("double")),
                 )
             else:
                 user_profiles = user_profiles.withColumn(
@@ -355,7 +381,7 @@ def aggregate_user_features(
         # Strategy: Extract experience-to-category mapping from ExperienceCreated events,
         # then join with user interaction events to get categories for each interaction.
 
-        # Extract experience-category mapping from events_df (experience events have category)
+        # 1.Extract experience-category mapping from events_df (experience events have category)
         exp_content_cols = [
             "id",
             "category_name",
@@ -391,14 +417,14 @@ def aggregate_user_features(
                 )
 
         if exp_category_df is not None and "_experience_id" in df.columns:
-            # Join user interactions with experience category data
+            # 2: Join user interactions with experience category data
             df_with_cat = df.join(
                 exp_category_df,
                 df["_experience_id"] == exp_category_df["_exp_id_for_cat"],
                 "left",
             ).drop("_exp_id_for_cat")
 
-            # Build user-category interaction counts (only for positive signals)
+            # Step 3: Build user-category interaction counts (only for positive signals)
             user_cat_interactions = (
                 df_with_cat.filter(
                     (F.col("is_last_7d") == 1)
@@ -449,6 +475,8 @@ def aggregate_user_features(
 
         # Compute User Price Preferences from Interaction History
         # Join with experience prices to understand user's price comfort zone
+
+        # This requires joining interaction events with experience prices
         user_features = user_features.withColumn("user_avg_price_7d", F.lit(0.0).cast("double"))
         user_features = user_features.withColumn(
             "user_price_tier",
@@ -521,8 +549,8 @@ def aggregate_experience_features(
             & F.col("_experience_id").isNotNull()
         )
 
-        # Add flags for interaction types
-        # Note: checks both "view" and "EVENT_TYPE_VIEW"
+        # Add flags for interaction types (handle both simplified and enum strings)
+        # Note:checks both "view" and "EVENT_TYPE_VIEW" to be safe
         df = df.withColumn(
             "is_view",
             F.when(F.upper(F.col("event_type")).isin(["VIEW", "EVENT_TYPE_VIEW"]), 1).otherwise(0),
@@ -540,7 +568,7 @@ def aggregate_experience_features(
                 1,
             ).otherwise(0),
         )
-        # Actions: Bookings (rsvp), shares, etc.
+        # Actions: Bookings, shares, etc.
         df = df.withColumn(
             "is_action",
             F.when(
@@ -642,7 +670,25 @@ def aggregate_experience_features(
         # Extract Experience Content Attributes (tags, category, location, name)
         # From ExperienceCreated events (partition_event_type = experience_events)
 
-        if "tags" in events_df.columns:
+        # Select content columns from experience events
+        exp_content_cols = [
+            "id",
+            "tags",
+            "category_name",
+            "event_location_coordinate",
+            "name",
+            "price_amount",
+            "event_timestamp",
+        ]
+        available_content_cols = [c for c in exp_content_cols if c in events_df.columns]
+
+        if available_content_cols:
+            logger.info(
+                "DEBUG: Starting experience content extraction",
+                available_content_cols=available_content_cols,
+                all_events_df_cols=events_df.columns[:20],  # First 20 cols
+            )
+
             # Filter to experience created events
             exp_filter = (
                 (
@@ -653,23 +699,46 @@ def aggregate_experience_features(
                 else F.col("_event_type").contains("Experience")
             )
 
-            # Select content columns from experience events
-            exp_content_cols = [
-                "id",
-                "tags",
-                "category_name",
-                "event_location_coordinate",
-                "name",
-                "price_amount",
-                "event_timestamp",
-            ]
-            available_cols = [c for c in exp_content_cols if c in events_df.columns]
+            exp_content = events_df.filter(exp_filter).select(
+                *[F.col(c) for c in available_content_cols]
+            )
 
-            exp_content = events_df.filter(exp_filter).select(*[F.col(c) for c in available_cols])
+            # DEBUG: Log ExperienceCreated event count and sample
+            exp_created_count = exp_content.count()
+            logger.info(f"DEBUG: Found {exp_created_count} ExperienceCreated events")
+
+            if exp_created_count > 0:
+                # Show sample of raw data
+                sample_rows = exp_content.limit(3).collect()
+                for i, row in enumerate(sample_rows):
+                    logger.info(
+                        f"DEBUG: Sample ExperienceCreated #{i+1}",
+                        id=row["id"] if "id" in row.asDict() else "N/A",
+                        tags_type=(type(row["tags"]).__name__ if "tags" in row.asDict() else "N/A"),
+                        tags_preview=(
+                            str(row["tags"])[:100]
+                            if "tags" in row.asDict() and row["tags"]
+                            else "NULL"
+                        ),
+                        price_amount=(
+                            row["price_amount"] if "price_amount" in row.asDict() else "N/A"
+                        ),
+                        category_name=(
+                            row["category_name"] if "category_name" in row.asDict() else "N/A"
+                        ),
+                    )
 
             # Rename for join
             exp_content = exp_content.withColumnRenamed("id", "content_exp_id")
-            exp_content = exp_content.withColumnRenamed("event_timestamp", "content_ts")
+
+            # timestamp handling
+            if "event_timestamp" in exp_content.columns:
+                exp_content = exp_content.withColumnRenamed("event_timestamp", "content_ts")
+            else:
+                # Should not happen given filtered source, but safe fallback
+                exp_content = exp_content.withColumn(
+                    "content_ts", F.to_timestamp(F.lit(target_date.isoformat()))
+                )
 
             # Get most recent content per experience (in case of updates)
             content_window = Window.partitionBy("content_exp_id").orderBy(
@@ -679,7 +748,12 @@ def aggregate_experience_features(
             exp_content = exp_content.filter(F.col("_rn") == 1).drop("_rn", "content_ts")
 
             # Extract tag names as array
-            exp_content = exp_content.withColumn("exp_tags", _extract_tag_names(F.col("tags")))
+            if "tags" in exp_content.columns:
+                exp_content = exp_content.withColumn("exp_tags", _extract_tag_names(F.col("tags")))
+            else:
+                exp_content = exp_content.withColumn(
+                    "exp_tags", F.array().cast(ArrayType(StringType()))
+                )
 
             # Extract category
             if "category_name" in exp_content.columns:
@@ -689,17 +763,32 @@ def aggregate_experience_features(
 
             # Extract location
             if "event_location_coordinate" in exp_content.columns:
+                # Check type
+                dq_type_exp = exp_content.schema["event_location_coordinate"].dataType
+                is_string_exp = isinstance(dq_type_exp, StringType)
+
+                lat_col_exp = (
+                    F.get_json_object(F.col("event_location_coordinate"), "$.latitude")
+                    if is_string_exp
+                    else F.col("event_location_coordinate").getItem("latitude")
+                )
+                lon_col_exp = (
+                    F.get_json_object(F.col("event_location_coordinate"), "$.longitude")
+                    if is_string_exp
+                    else F.col("event_location_coordinate").getItem("longitude")
+                )
+
                 exp_content = exp_content.withColumn(
                     "exp_latitude",
                     F.when(
                         F.col("event_location_coordinate").isNotNull(),
-                        F.col("event_location_coordinate").getItem("latitude"),
+                        lat_col_exp.cast("double"),
                     ),
                 ).withColumn(
                     "exp_longitude",
                     F.when(
                         F.col("event_location_coordinate").isNotNull(),
-                        F.col("event_location_coordinate").getItem("longitude"),
+                        lon_col_exp.cast("double"),
                     ),
                 )
             else:
@@ -732,15 +821,49 @@ def aggregate_experience_features(
             )
 
             # Left join with behavioral features
+            # DEBUG: Log pre-join counts
+            behavioral_count = exp_features.count()
+            content_count = exp_content.count()
+            logger.info(
+                f"DEBUG: Pre-join counts - behavioral_features={behavioral_count}, content_attributes={content_count}"
+            )
+
             exp_features = exp_features.join(
                 exp_content,
                 exp_features["experience_id"] == exp_content["content_exp_id"],
                 "left",
             ).drop("content_exp_id", "tags", "event_location_coordinate")
 
+            # DEBUG: Log post-join statistics
+            post_join_count = exp_features.count()
+            null_tags_count = exp_features.filter(F.col("exp_tags").isNull()).count()
+            empty_tags_count = exp_features.filter(F.size(F.col("exp_tags")) == 0).count()
+            null_price_count = exp_features.filter(F.col("exp_price").isNull()).count()
+            zero_price_count = exp_features.filter(F.col("exp_price") == 0.0).count()
+
+            logger.info(
+                "DEBUG: Post-join statistics",
+                post_join_count=post_join_count,
+                null_tags=null_tags_count,
+                empty_tags=empty_tags_count,
+                null_price=null_price_count,
+                zero_price=zero_price_count,
+            )
+
+            # DEBUG: Show sample of final features with tags
+            sample_with_tags = exp_features.filter(F.size(F.col("exp_tags")) > 0).limit(3).collect()
+            for i, row in enumerate(sample_with_tags):
+                logger.info(
+                    f"DEBUG: Sample with tags #{i+1}",
+                    experience_id=row["experience_id"],
+                    exp_tags=row["exp_tags"],
+                    exp_price=row["exp_price"],
+                    exp_category=row["exp_category"],
+                )
+
             logger.info("Joined experience content attributes (tags, category, location)")
         else:
-            # No tags column available, add empty defaults
+            # No content columns available, use defaults
             exp_features = exp_features.withColumn(
                 "exp_tags", F.array().cast(ArrayType(StringType()))
             )
@@ -749,7 +872,7 @@ def aggregate_experience_features(
             exp_features = exp_features.withColumn("exp_longitude", F.lit(None).cast("double"))
             exp_features = exp_features.withColumn("exp_name", F.lit(None).cast("string"))
             exp_features = exp_features.withColumn("exp_price", F.lit(0.0).cast("double"))
-            logger.info("No tags column in events, using empty defaults for experience content")
+            logger.info("No content columns in events, using empty defaults for experience content")
 
         # Add event_timestamp for Feast
         exp_features = exp_features.withColumn(
@@ -999,7 +1122,7 @@ def _get_top_k_categories(categories: list[str], k: int = 5) -> list[str]:
 @F.udf(returnType=StringType())
 def _classify_popularity_tier(views: int, clicks: int) -> str:
     """Classify experience into popularity tiers."""
-    # Simple rule-based logic (can be replaced by quantiles later)
+    # Simple rule-based logic (TODO:replace by quantiles later)
     score = (views * 1) + (clicks * 5)
 
     if score > 1000:
