@@ -1,4 +1,4 @@
-"""Production-ready Kafka consumer skeleton with observability, retry patterns, and DLQ support."""
+"""Consumer skeleton with observability, retry patterns, and DLQ support."""
 
 import asyncio
 import signal
@@ -258,10 +258,6 @@ class KafkaConsumer:
         """
         Parse Kafka message using EventEnvelope pattern (Protobuf-only).
 
-        The backend uses a 2-layer protobuf approach:
-        1. Outer: EventEnvelope (event_type, event_version, timestamp, trace_id, payload)
-        2. Inner: Specific event type (UserProfileCreated, ExperienceCreated, etc.)
-
         Uses togather-event-sdk for deserialization.
         """
         try:
@@ -304,9 +300,6 @@ class KafkaConsumer:
         Parse EventEnvelope protobuf message using togather-event-sdk.
 
         Returns the inner payload as a dict with envelope metadata.
-
-        Note: Similar to Flink's event_envelope_parser, we handle the case
-        where bytes might need ISO-8859-1 encoding/decoding.
         """
         try:
             from google.protobuf.json_format import MessageToDict
@@ -404,6 +397,8 @@ class KafkaConsumer:
 
             mapping["user.v1.UserAccountCreated"] = UserAccountCreated
             mapping["user.v1.UserProfileCreated"] = UserProfileCreated
+            # UserProfileUpdated uses the same schema as UserProfileCreated
+            mapping["user.v1.UserProfileUpdated"] = UserProfileCreated
         except ImportError:
             pass
 
@@ -507,7 +502,7 @@ class KafkaConsumer:
             error_reason=error_reason,
         )
 
-        # In a real implementation, will be send this to the DLQ topic
+        # TODO: send this to the DLQ topic
         self.logger.error(
             "Message sent to DLQ",
             dlq_topic=self.config.dlq_topic,
@@ -640,7 +635,7 @@ class KafkaConsumer:
 
         if self.consumer:
             try:
-                # Best practice: Commit final offsets before closing
+                # Commit final offsets before closing
                 self.logger.info("Committing final offsets...")
                 self.consumer.commit()
                 self.logger.info("Final offsets committed successfully")

@@ -293,6 +293,121 @@ class RedisSink:
         result = self._client.delete(key)
         return bool(result)
 
+    # Real-Time User Features (for ranking service)
+
+    def write_realtime_user_features(
+        self,
+        user_id: str,
+        features: dict[str, Any],
+        ttl_seconds: int | None = None,
+    ) -> str | None:
+        """
+        Write real-time user features to Redis for recommendations.
+
+        Key pattern: realtime:user:{user_id}
+
+        These features are read by the ranking service for:
+        - Heuristic recommendations (category/tag matching)
+        - Ranking model personalization
+        - Diversity (avoid showing same experiences)
+
+        Args:
+            user_id: User identifier
+            features: Feature dictionary from RealtimeUserFeatures.to_dict()
+            ttl_seconds: Optional TTL override (defaults to 1 hour)
+
+        Returns:
+            Redis key where features were stored, or None if unavailable
+        """
+        if not self._ensure_connected():
+            print(f"Redis unavailable, skipping realtime write for {user_id}")
+            return None
+
+        if self._client is None:
+            return None
+
+        key = f"realtime:user:{user_id}"
+        ttl = ttl_seconds or self.config.ttl_seconds
+
+        try:
+            # Compute hash of new features
+            new_hash = self._compute_hash(features)
+
+            # Check existing hash in Redis
+            existing_hash = self._client.hget(key, "_hash")
+
+            # Skip write if content unchanged
+            if existing_hash == new_hash:
+                return None  # No change, skip write
+
+            # Content changed - write features with hash
+            features_with_hash = {**features, "_hash": new_hash}
+
+            # Use pipeline for atomic operation
+            pipe = self._client.pipeline()
+            pipe.hset(key, mapping=features_with_hash)
+            pipe.expire(key, ttl)
+            pipe.execute()
+
+            print(f"Written realtime features for user {user_id}")
+            return key
+
+        except redis.RedisError as e:
+            print(f"Failed to write realtime features to Redis: {e}")
+            self._connected = False  # Mark for reconnection
+            return None
+
+    def get_realtime_user_features(self, user_id: str) -> dict[str, Any] | None:
+        """
+        Get real-time user features from Redis.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Feature dictionary with parsed lists, or None if not found
+        """
+        if not self._ensure_connected():
+            return None
+
+        key = f"realtime:user:{user_id}"
+
+        try:
+            if self._client is None:
+                return None
+            raw_features = self._client.hgetall(key)
+            if not raw_features:
+                return None
+
+            # Parse JSON-encoded list fields
+            features: dict[str, Any] = {}
+            list_fields = {
+                "recent_categories_viewed",
+                "recent_tags_interacted",
+                "user_viewed_experiences",
+                "already_shown_session",
+            }
+
+            for k, v in raw_features.items():
+                if k in list_fields:
+                    try:
+                        features[k] = json.loads(v) if v else []
+                    except json.JSONDecodeError:
+                        features[k] = []
+                elif k == "session_engagement_score":
+                    try:
+                        features[k] = float(v)
+                    except (ValueError, TypeError):
+                        features[k] = 0.0
+                else:
+                    features[k] = v
+
+            return features
+
+        except redis.RedisError as e:
+            print(f"Failed to read realtime features from Redis: {e}")
+            return None
+
     def close(self) -> None:
         """Close Redis connection and pool."""
         if self._client:

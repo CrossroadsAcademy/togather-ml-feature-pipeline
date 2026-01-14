@@ -16,6 +16,8 @@ Usage:
 
 import os
 import threading
+
+# Note: Using print() instead of structlog to avoid PyFlink CustomPrint flush issue
 import time
 from datetime import datetime
 from pathlib import Path
@@ -43,7 +45,10 @@ from pyflink.datastream.window import (
 )
 
 from src.flink.event_validator import EventValidator
-from src.flink.feature_extractors import extract_session_features
+from src.flink.feature_extractors import (
+    extract_realtime_user_features,
+    extract_session_features,
+)
 from src.flink.redis_sink import RedisSink, RedisSinkConfig
 
 env_path = Path(__file__).parent.parent.parent / ".env"
@@ -161,13 +166,13 @@ class EventTimestampAssigner:
         """
         # 1. Try EventEnvelope timestamp (from proto parsing)
         envelope_ts = event.get("_timestamp")
-        if envelope_ts and isinstance(envelope_ts, (int | float)) and envelope_ts > 0:
+        if envelope_ts and isinstance(envelope_ts, int | float) and envelope_ts > 0:
             # Already in milliseconds from proto
             return int(envelope_ts)
 
         # 2. Try payload timestamp field (JSON events)
         payload_ts = event.get("timestamp")
-        if payload_ts and isinstance(payload_ts, (int | float)) and payload_ts > 0:
+        if payload_ts and isinstance(payload_ts, int | float) and payload_ts > 0:
             # Auto-detect seconds vs milliseconds
             # Timestamps after year 2001 in seconds would be > 1e9
             # Timestamps in milliseconds would be > 1e12
@@ -178,7 +183,7 @@ class EventTimestampAssigner:
 
         # 3. Try created_at field (common in some protos)
         created_at = event.get("created_at")
-        if created_at and isinstance(created_at, (int | float)) and created_at > 0:
+        if created_at and isinstance(created_at, int | float) and created_at > 0:
             if created_at > 1e12:
                 return int(created_at)
             else:
@@ -239,6 +244,8 @@ class SessionWindowGap(SessionWindowTimeGapExtractor):
 
     def extract(self, element: Any) -> int:
         """Extract session gap based on event."""
+        # Could implement dynamic gaps based on event type
+        # default 30 minute gap
         return self.default_gap_ms
 
 
@@ -286,25 +293,40 @@ class SessionAggregator(ProcessWindowFunction):
         if not elements:
             return []
 
+        events_list = list(elements)
+
         # Extract session features
-        features = extract_session_features(list(elements))
-        if not features:
+        session_features = extract_session_features(events_list)
+        if not session_features:
             return []
+
+        # Extract realtime user features (for ranking service)
+        realtime_features = extract_realtime_user_features(events_list)
 
         # Write to Redis
         if self._redis_sink:
+            # Write session features
             try:
                 self._redis_sink.write_session_features(
-                    user_id=features.user_id,
-                    session_id=features.session_id,
-                    features=features.to_dict(),
+                    user_id=session_features.user_id,
+                    session_id=session_features.session_id,
+                    features=session_features.to_dict(),
                 )
-                print(f"Written session features for {features.user_id}:{features.session_id}")
             except Exception as e:
-                print(f"Failed to write to Redis: {e}")
+                print(f"Failed to write session features to Redis: {e}")
+
+            # Write realtime user features (for ranking service)
+            if realtime_features:
+                try:
+                    self._redis_sink.write_realtime_user_features(
+                        user_id=realtime_features.user_id,
+                        features=realtime_features.to_dict(),
+                    )
+                except Exception as e:
+                    print(f"Failed to write realtime features to Redis: {e}")
 
         # Return features for potential downstream processing
-        return [features.to_dict()]
+        return [session_features.to_dict()]
 
 
 class EventRouter(KeyedProcessFunction):
@@ -358,6 +380,7 @@ class EventRouter(KeyedProcessFunction):
             print(
                 f"Warning: Invalid event for user {ctx.get_current_key()}: {result.error_message}"
             )
+
             return []
 
 
@@ -431,8 +454,6 @@ class FlinkSessionJob:
                         "ssl.truststore.location", self.config.kafka_ssl_ca_location
                     )
                 else:
-                    # For PEM files, some Kafka installations may support this
-                    # If not working, you may need to convert PEM to JKS
                     builder = builder.set_property("ssl.truststore.type", "PEM")
                     builder = builder.set_property(
                         "ssl.truststore.location", self.config.kafka_ssl_ca_location
@@ -501,7 +522,8 @@ class FlinkSessionJob:
                 "Kafka Source",
             )
 
-            # Parse messages using EventEnvelope parser (supports both protobuf and JSON)
+            # Parse messages using EventEnvelope parser
+            # Import here to ensure module is available after job submission
             from src.flink.event_envelope_parser import (
                 get_user_id_from_event,
                 parse_kafka_message,
@@ -529,9 +551,6 @@ class FlinkSessionJob:
                 user_id = get_user_id_from_event(event)
                 event_type = event.get("_event_type", "N/A")
                 parse_error = event.get("_parse_error", None)
-
-                # Record event for status monitoring
-                status_logger.record_event()
 
                 # Print detailed error info
                 if parse_error:
@@ -658,7 +677,6 @@ class FlinkSessionJob:
 
             debugged = validated.map(debug_and_pass, output_type=Types.PICKLED_BYTE_ARRAY())
 
-            # Note: Raw events to MinIO are handled by AppEventsProcessor (separate consumer)
             # This Flink job focuses on session aggregation to Redis
 
             # Key by user_id (extracted from various fields depending on event type)

@@ -45,6 +45,54 @@ class SessionFeatures:
         }
 
 
+@dataclass
+class RealtimeUserFeatures:
+    """Real-time user intent signals for recommendations.
+
+    These features are computed from the current session and recent events,
+    enabling:
+    - Heuristic recommendations (cold start, category matching)
+    - Ranking model personalization (fresh user signals)
+    - Diversity in re-ranking (avoid repetition)
+    """
+
+    user_id: str
+    session_id: str
+
+    # Category/tag preferences from current session
+    recent_categories_viewed: list[str] = field(default_factory=list)  # Last 5 categories (deduped)
+    recent_tags_interacted: list[str] = field(default_factory=list)  # Last 10 tags (deduped)
+    session_category_focus: str = ""  # Dominant category in session
+
+    # Interaction history for negative sampling and diversity
+    user_viewed_experiences: list[str] = field(default_factory=list)  # Last 50 experience IDs
+    already_shown_session: list[str] = field(
+        default_factory=list
+    )  # Shown this session (for diversity)
+
+    # Session context
+    session_engagement_score: float = 0.0
+    last_event_timestamp: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for Redis storage."""
+        import json
+
+        return {
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "recent_categories_viewed": json.dumps(self.recent_categories_viewed),
+            "recent_tags_interacted": json.dumps(self.recent_tags_interacted),
+            "session_category_focus": self.session_category_focus,
+            "user_viewed_experiences": json.dumps(self.user_viewed_experiences),
+            "already_shown_session": json.dumps(self.already_shown_session),
+            "session_engagement_score": self.session_engagement_score,
+            "last_event_timestamp": (
+                self.last_event_timestamp.isoformat() if self.last_event_timestamp else ""
+            ),
+        }
+
+
 def extract_session_features(events: list[dict[str, Any]]) -> SessionFeatures | None:
     """
     Extract session-level features from a list of events.
@@ -355,3 +403,209 @@ def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> f
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     return R * c
+
+
+# Real-Time User Feature Extraction
+
+
+def _extract_category_from_event(event: dict[str, Any]) -> str | None:
+    """Extract category from an event.
+
+    Tries multiple field names to handle different event types.
+    """
+    # Direct category field
+    category = event.get("category_name") or event.get("category")
+    if category and isinstance(category, str):
+        return category
+
+    # Nested category object
+    cat_obj = event.get("category")
+    if cat_obj and isinstance(cat_obj, dict):
+        return cat_obj.get("name") or cat_obj.get("id")
+
+    # From experience context in recommendation events
+    exp_context = event.get("experience_context") or event.get("experienceContext")
+    if exp_context and isinstance(exp_context, dict):
+        return exp_context.get("category_name") or exp_context.get("category")
+
+    return None
+
+
+def _extract_tags_from_event(event: dict[str, Any]) -> list[str]:
+    """Extract tag names from an event."""
+    tags = []
+
+    # Direct tags array
+    raw_tags = event.get("tags") or event.get("exp_tags")
+    if raw_tags and isinstance(raw_tags, list):
+        for tag in raw_tags:
+            if isinstance(tag, str):
+                tags.append(tag)
+            elif isinstance(tag, dict):
+                tag_name = tag.get("name") or tag.get("id")
+                if tag_name:
+                    tags.append(str(tag_name))
+
+    # From experience context
+    exp_context = event.get("experience_context") or event.get("experienceContext")
+    if exp_context and isinstance(exp_context, dict):
+        ctx_tags = exp_context.get("tags") or []
+        for tag in ctx_tags:
+            if isinstance(tag, str):
+                tags.append(tag)
+            elif isinstance(tag, dict):
+                tag_name = tag.get("name")
+                if tag_name:
+                    tags.append(str(tag_name))
+
+    return tags
+
+
+def _extract_experience_id_from_event(event: dict[str, Any]) -> str | None:
+    """Extract experience ID from an event."""
+    # Direct fields
+    exp_id = event.get("experience_id") or event.get("experienceId") or event.get("event_id")
+    if exp_id:
+        return str(exp_id)
+
+    # From recommendations (served events)
+    recommendations = event.get("recommendations") or []
+    if recommendations and isinstance(recommendations, list):
+        # Return first recommended experience
+        first_rec = recommendations[0] if recommendations else {}
+        if isinstance(first_rec, dict):
+            return first_rec.get("experience_id") or first_rec.get("experienceId")
+
+    return None
+
+
+def extract_realtime_user_features(
+    events: list[dict[str, Any]],
+    max_categories: int = 5,
+    max_tags: int = 10,
+    max_viewed_experiences: int = 50,
+) -> RealtimeUserFeatures | None:
+    """
+    Extract real-time user features from a list of events.
+
+    These features power:
+    - Heuristic recommendations (category/tag matching for cold start)
+    - Ranking model (fresh user signals for personalization)
+    - Diversity (avoid showing same experiences again)
+
+    Args:
+        events: List of event dictionaries within a session window
+        max_categories: Maximum categories to track (default 5)
+        max_tags: Maximum tags to track (default 10)
+        max_viewed_experiences: Maximum viewed experience IDs to track
+
+    Returns:
+        RealtimeUserFeatures dataclass with computed features
+    """
+    if not events:
+        return None
+
+    # Helper to normalize timestamp to int for sorting (handles str/int mix)
+    def _get_sortable_timestamp(event: dict) -> int:
+        ts = (
+            event.get("_extracted_timestamp")
+            or event.get("timestamp")
+            or event.get("_timestamp")
+            or 0
+        )
+        if isinstance(ts, str):
+            # Try to parse as int, else use 0
+            try:
+                return int(ts)
+            except ValueError:
+                # ISO format string - parse to timestamp
+                try:
+                    from datetime import datetime
+
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    return int(dt.timestamp() * 1000)
+                except (ValueError, AttributeError):
+                    return 0
+        return int(ts) if ts else 0
+
+    # Sort by timestamp (normalized to int)
+    sorted_events = sorted(events, key=_get_sortable_timestamp)
+
+    first_event = sorted_events[0]
+    last_event = sorted_events[-1]
+
+    # Extract user and session IDs
+    user_id = first_event.get("user_id") or first_event.get("id") or "unknown"
+    session_id = first_event.get("session_id") or _generate_session_id(user_id, first_event)
+
+    # Track categories (maintain order, dedupe)
+    categories_seen: list[str] = []
+    for event in sorted_events:
+        category = _extract_category_from_event(event)
+        if category and category not in categories_seen:
+            categories_seen.append(category)
+    recent_categories = categories_seen[-max_categories:]
+
+    # Track tags (maintain order, dedupe)
+    tags_seen: list[str] = []
+    for event in sorted_events:
+        tags = _extract_tags_from_event(event)
+        for tag in tags:
+            if tag not in tags_seen:
+                tags_seen.append(tag)
+    recent_tags = tags_seen[-max_tags:]
+
+    # Determine dominant category (most frequent)
+    category_counts: dict[str, int] = {}
+    for event in sorted_events:
+        category = _extract_category_from_event(event)
+        if category:
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+    session_category_focus = ""
+    if category_counts:
+        session_category_focus = max(category_counts, key=category_counts.get)  # type: ignore
+
+    # Track viewed experiences (for negative sampling)
+    viewed_experiences: list[str] = []
+    for event in sorted_events:
+        exp_id = _extract_experience_id_from_event(event)
+        if exp_id and exp_id not in viewed_experiences:
+            viewed_experiences.append(exp_id)
+    viewed_experiences = viewed_experiences[-max_viewed_experiences:]
+
+    # Track shown experiences this session (for diversity)
+    # These are experience IDs from recommendation.served events
+    already_shown: list[str] = []
+    for event in sorted_events:
+        event_type = event.get("_event_type") or ""
+        if "Served" in event_type or "served" in event_type.lower():
+            recommendations = event.get("recommendations") or []
+            for rec in recommendations:
+                if isinstance(rec, dict):
+                    # RecommendedItem uses event_id (not experience_id) per protobuf
+                    exp_id = (
+                        rec.get("event_id") or rec.get("experience_id") or rec.get("experienceId")
+                    )
+                    if exp_id and exp_id not in already_shown:
+                        already_shown.append(str(exp_id))
+
+    # Compute engagement score
+    engagement_score = compute_engagement_score(sorted_events)
+
+    # Get last event timestamp
+    last_ts = _parse_timestamp(
+        last_event.get("_extracted_timestamp") or last_event.get("timestamp")
+    )
+
+    return RealtimeUserFeatures(
+        user_id=user_id,
+        session_id=session_id,
+        recent_categories_viewed=recent_categories,
+        recent_tags_interacted=recent_tags,
+        session_category_focus=session_category_focus,
+        user_viewed_experiences=viewed_experiences,
+        already_shown_session=already_shown,
+        session_engagement_score=engagement_score,
+        last_event_timestamp=last_ts,
+    )
