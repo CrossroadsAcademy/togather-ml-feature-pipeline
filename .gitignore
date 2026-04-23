@@ -20,6 +20,11 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+scripts/test_flink_session_job.py
+k8s/spark-s3-credentials.yaml
+scripts/test_real_feature_pipeline.py
+scripts/test_feature_pipeline.py
+
 
 # Virtual environments
 venv/
@@ -78,6 +83,9 @@ savepoints/
 # Build artifacts
 *.tar
 *.zip
+
+#test
+scripts/demo_test.py
 
 #Example test scripts
 examples/

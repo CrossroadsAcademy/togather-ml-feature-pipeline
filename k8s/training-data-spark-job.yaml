@@ -1,0 +1,63 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: training-data-job
+  namespace: default
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: togather-ml/spark-batch-pipeline:latest
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: "local:///opt/spark/work-dir/src/batch/generate_training_data_job.py"
+  arguments:
+    - "--target-date"
+    - "2026-01-12"
+    - "--output-bucket"
+    - "dvc-data"
+    - "--feature-bucket"
+    - "raw-events"
+  sparkVersion: "3.5.0"
+  sparkConf:
+    spark.hadoop.fs.s3a.endpoint: "http://minio.platform.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.eventLog.enabled: "false"
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 3
+    onFailureRetryInterval: 30
+  driver:
+    cores: 1
+    memory: "1g"
+    serviceAccount: spark
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_SECRET_ACCESS_KEY
+      - name: MINIO_ENDPOINT_URL
+        value: "http://minio.platform.svc.cluster.local:9000"
+  executor:
+    cores: 1
+    memory: "1g"
+    instances: 1
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_SECRET_ACCESS_KEY

@@ -1,0 +1,19 @@
+# Core utilities
+structlog
+pydantic
+pydantic-settings
+
+# Monitoring & Observability
+prometheus-client
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+
+# Storage & Data
+redis
+minio
+s3fs
+pyarrow
+
+# Feature Store
+feast

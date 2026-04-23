@@ -43,6 +43,7 @@ class RedisSink:
     """
     Redis sink for storing session features.
 
+    Uses connection pooling for efficient connection management.
     Writes features as Redis hashes with TTL for automatic expiration.
 
     Key pattern: {prefix}:{user_id}:{session_id}
@@ -58,34 +59,69 @@ class RedisSink:
 
     def __init__(self, config: RedisSinkConfig | None = None):
         self.config = config or RedisSinkConfig.from_env()
+        self._pool: redis.ConnectionPool | None = None
         self._client: redis.Redis | None = None
         self._connected = False
         # Lazy initialization - don't connect in constructor
 
     def _ensure_connected(self) -> bool:
-        """Ensure Redis client is connected. Returns True if connected."""
+        """Ensure Redis client is connected using connection pool. Returns True if connected."""
         if self._connected and self._client:
             return True
 
         try:
-            self._client = redis.Redis(
-                host=self.config.host,
-                port=self.config.port,
-                db=self.config.db,
-                password=self.config.password,
-                socket_timeout=self.config.connection_timeout,
-                decode_responses=True,
-            )
+            # Create connection pool if not exists
+            if self._pool is None:
+                self._pool = redis.ConnectionPool(
+                    host=self.config.host,
+                    port=self.config.port,
+                    db=self.config.db,
+                    password=self.config.password,
+                    max_connections=20,  # Limit max connections
+                    socket_timeout=self.config.connection_timeout,
+                    socket_connect_timeout=self.config.connection_timeout,
+                    retry_on_timeout=True,
+                    decode_responses=True,
+                )
+
+            # Create client from pool
+            self._client = redis.Redis(connection_pool=self._pool)
+
             # Test connection
             self._client.ping()
             self._connected = True
-            print(f"Redis sink connected: {self.config.host}:{self.config.port}")
+            print(f"Redis sink connected (pooled): {self.config.host}:{self.config.port}")
             return True
         except redis.ConnectionError as e:
             print(f"Redis connection failed (will retry): {e}")
             self._client = None
             self._connected = False
             return False
+
+    def is_healthy(self) -> tuple[bool, str]:
+        """Check if Redis connection is healthy. Used by health check server."""
+        try:
+            if not self._ensure_connected() or self._client is None:
+                return False, "Not connected"
+
+            # Ping to verify connection is alive
+            self._client.ping()
+
+            # Get memory info for diagnostics
+            info = self._client.info("memory")
+            used_memory = info.get("used_memory") if isinstance(info, dict) else 0
+            used_memory_mb = (used_memory if used_memory else 0) / 1024 / 1024
+
+            # Check pool stats if available
+            pool_info = ""
+            if self._pool:
+                in_use = len(self._pool._in_use_connections)
+                available = len(self._pool._available_connections)
+                pool_info = f", pool: {in_use} in-use, {available} available"
+
+            return True, f"Connected, memory: {used_memory_mb:.1f}MB{pool_info}"
+        except Exception as e:
+            return False, str(e)
 
     def _compute_hash(self, features: dict[str, Any]) -> str:
         """Compute hash of features for change detection."""
@@ -257,10 +293,133 @@ class RedisSink:
         result = self._client.delete(key)
         return bool(result)
 
+    # Real-Time User Features (for ranking service)
+
+    def write_realtime_user_features(
+        self,
+        user_id: str,
+        features: dict[str, Any],
+        ttl_seconds: int | None = None,
+    ) -> str | None:
+        """
+        Write real-time user features to Redis for recommendations.
+
+        Key pattern: realtime:user:{user_id}
+
+        These features are read by the ranking service for:
+        - Heuristic recommendations (category/tag matching)
+        - Ranking model personalization
+        - Diversity (avoid showing same experiences)
+
+        Args:
+            user_id: User identifier
+            features: Feature dictionary from RealtimeUserFeatures.to_dict()
+            ttl_seconds: Optional TTL override (defaults to 1 hour)
+
+        Returns:
+            Redis key where features were stored, or None if unavailable
+        """
+        if not self._ensure_connected():
+            print(f"Redis unavailable, skipping realtime write for {user_id}")
+            return None
+
+        if self._client is None:
+            return None
+
+        key = f"realtime:user:{user_id}"
+        ttl = ttl_seconds or self.config.ttl_seconds
+
+        try:
+            # Compute hash of new features
+            new_hash = self._compute_hash(features)
+
+            # Check existing hash in Redis
+            existing_hash = self._client.hget(key, "_hash")
+
+            # Skip write if content unchanged
+            if existing_hash == new_hash:
+                return None  # No change, skip write
+
+            # Content changed - write features with hash
+            features_with_hash = {**features, "_hash": new_hash}
+
+            # Use pipeline for atomic operation
+            pipe = self._client.pipeline()
+            pipe.hset(key, mapping=features_with_hash)
+            pipe.expire(key, ttl)
+            pipe.execute()
+
+            print(f"Written realtime features for user {user_id}")
+            return key
+
+        except redis.RedisError as e:
+            print(f"Failed to write realtime features to Redis: {e}")
+            self._connected = False  # Mark for reconnection
+            return None
+
+    def get_realtime_user_features(self, user_id: str) -> dict[str, Any] | None:
+        """
+        Get real-time user features from Redis.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            Feature dictionary with parsed lists, or None if not found
+        """
+        if not self._ensure_connected():
+            return None
+
+        key = f"realtime:user:{user_id}"
+
+        try:
+            if self._client is None:
+                return None
+            raw_features = self._client.hgetall(key)
+            if not raw_features:
+                return None
+
+            if not isinstance(raw_features, dict):
+                return None
+
+            # Parse JSON-encoded list fields
+            features: dict[str, Any] = {}
+            list_fields = {
+                "recent_categories_viewed",
+                "recent_tags_interacted",
+                "user_viewed_experiences",
+                "already_shown_session",
+            }
+
+            for k, v in raw_features.items():
+                if k in list_fields:
+                    try:
+                        features[k] = json.loads(v) if v else []
+                    except json.JSONDecodeError:
+                        features[k] = []
+                elif k == "session_engagement_score":
+                    try:
+                        features[k] = float(v)
+                    except (ValueError, TypeError):
+                        features[k] = 0.0
+                else:
+                    features[k] = v
+
+            return features
+
+        except redis.RedisError as e:
+            print(f"Failed to read realtime features from Redis: {e}")
+            return None
+
     def close(self) -> None:
-        """Close Redis connection."""
+        """Close Redis connection and pool."""
         if self._client:
             self._client.close()
             self._client = None
-            self._connected = False
-            print("Redis connection closed")
+
+        if self._pool:
+            self._pool.disconnect()
+            self._pool = None
+
+        self._connected = False
+        print("Redis connection and pool closed")

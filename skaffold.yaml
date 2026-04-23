@@ -6,7 +6,11 @@ metadata:
 build:
   local:
     push: false
-    useBuildkit: false
+    # Enable BuildKit for better layer caching
+    # If this hangs on Colima, set back to false
+    useBuildkit: true
+  tagPolicy:
+    sha256: {}  # Use content-based SHA256 hash for consistent, reproducible tags
   artifacts:
     - image: togather-ml-feature-pipeline
       context: .
@@ -16,6 +20,15 @@ build:
       context: .
       docker:
         dockerfile: docker/Dockerfile.flink
+    - image: togather-ml/spark-batch-pipeline
+      context: .
+      docker:
+        dockerfile: docker/Dockerfile.spark
+    # # App Events Processor - Kafka consumer that archives to MinIO
+    # - image: togather-ml/app-events-processor
+    #   context: .
+    #   docker:
+    #     dockerfile: docker/Dockerfile.consumer
 manifests:
   rawYaml:
     - k8s/deployment.yaml

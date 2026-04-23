@@ -210,7 +210,7 @@ class EventValidator:
         return ValidationResult(is_valid=True)
 
     def _validate_timestamp(self, timestamp: Any) -> ValidationResult:
-        """Validate timestamp format."""
+        """Validate timestamp format. Accepts ISO strings or epoch milliseconds."""
         if timestamp is None:
             return ValidationResult(
                 is_valid=False,
@@ -218,29 +218,40 @@ class EventValidator:
                 error_message="Timestamp is required",
             )
 
-        if not isinstance(timestamp, str):
+        # Accept integer timestamps (epoch milliseconds from protobuf)
+        if isinstance(timestamp, (int | float)):
+            # Basic sanity check: should be a reasonable epoch time
+            if timestamp > 0:
+                return ValidationResult(is_valid=True)
             return ValidationResult(
                 is_valid=False,
                 error_type="invalid_timestamp",
-                error_message=f"Timestamp must be string, got {type(timestamp).__name__}",
+                error_message=f"Invalid timestamp value: {timestamp}",
             )
 
-        # Try to parse ISO format
-        try:
-            from datetime import datetime
+        # Accept string timestamps (ISO format)
+        if isinstance(timestamp, str):
+            try:
+                from datetime import datetime
 
-            ts = timestamp
-            if ts.endswith("Z"):
-                ts = ts[:-1] + "+00:00"
-            datetime.fromisoformat(ts)
-            return ValidationResult(is_valid=True)
+                ts = timestamp
+                if ts.endswith("Z"):
+                    ts = ts[:-1] + "+00:00"
+                datetime.fromisoformat(ts)
+                return ValidationResult(is_valid=True)
 
-        except ValueError:
-            return ValidationResult(
-                is_valid=False,
-                error_type="invalid_timestamp",
-                error_message=f"Cannot parse timestamp: {timestamp}",
-            )
+            except ValueError:
+                return ValidationResult(
+                    is_valid=False,
+                    error_type="invalid_timestamp",
+                    error_message=f"Cannot parse timestamp: {timestamp}",
+                )
+
+        return ValidationResult(
+            is_valid=False,
+            error_type="invalid_timestamp",
+            error_message=f"Timestamp must be string or int, got {type(timestamp).__name__}",
+        )
 
     def _record_validation(self, status: str, error_type: str) -> None:
         """Record validation result to Prometheus."""

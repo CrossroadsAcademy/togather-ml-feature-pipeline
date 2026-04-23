@@ -1,0 +1,422 @@
+# PIPELINE DEFINITION
+# Name: batch-feature-pipeline
+# Description: Compute batch features from raw events and write to offline/online stores
+# Inputs:
+#    mode: str [Default: 'incremental']
+#    target_date: str [Default: '']
+components:
+  comp-submit-spark-job:
+    executorLabel: exec-submit-spark-job
+    inputDefinitions:
+      parameters:
+        mode:
+          defaultValue: incremental
+          isOptional: true
+          parameterType: STRING
+        namespace:
+          defaultValue: default
+          isOptional: true
+          parameterType: STRING
+        target_date:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-validate-online-features:
+    executorLabel: exec-validate-online-features
+    inputDefinitions:
+      parameters:
+        entity_type:
+          defaultValue: user
+          isOptional: true
+          parameterType: STRING
+        redis_host:
+          defaultValue: redis.platform.svc.cluster.local
+          isOptional: true
+          parameterType: STRING
+        redis_password:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        redis_port:
+          defaultValue: 6379.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        sample_size:
+          defaultValue: 10.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-validate-online-features-2:
+    executorLabel: exec-validate-online-features-2
+    inputDefinitions:
+      parameters:
+        entity_type:
+          defaultValue: user
+          isOptional: true
+          parameterType: STRING
+        redis_host:
+          defaultValue: redis.platform.svc.cluster.local
+          isOptional: true
+          parameterType: STRING
+        redis_password:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        redis_port:
+          defaultValue: 6379.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        sample_size:
+          defaultValue: 10.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-wait-for-spark-job:
+    executorLabel: exec-wait-for-spark-job
+    inputDefinitions:
+      parameters:
+        job_name:
+          parameterType: STRING
+        namespace:
+          defaultValue: default
+          isOptional: true
+          parameterType: STRING
+        timeout_minutes:
+          defaultValue: 60.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-submit-spark-job:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - submit_spark_job
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'pyyaml' 'kubernetes'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef submit_spark_job(\n    target_date: str,\n    mode: str = \"\
+          incremental\",\n    namespace: str = \"default\",  # Spark operator watches\
+          \ 'default'\n) -> str:\n    \"\"\"\n    Submit SparkApplication to Kubernetes.\n\
+          \n    Returns the job name for status tracking.\n    \"\"\"\n    import\
+          \ json\n    from datetime import datetime\n\n    from kubernetes import\
+          \ client, config\n\n    # Load in-cluster config\n    config.load_incluster_config()\n\
+          \n    # Generate unique job name\n    timestamp = datetime.now().strftime(\"\
+          %Y%m%d-%H%M%S\")\n    job_name = f\"batch-feature-job-{timestamp}\"\n\n\
+          \    # Create SparkApplication manifest\n    manifest = {\n        \"apiVersion\"\
+          : \"sparkoperator.k8s.io/v1beta2\",\n        \"kind\": \"SparkApplication\"\
+          ,\n        \"metadata\": {\n            \"name\": job_name,\n          \
+          \  \"namespace\": namespace,\n        },\n        \"spec\": {\n        \
+          \    \"type\": \"Python\",\n            \"pythonVersion\": \"3\",\n    \
+          \        \"mode\": \"cluster\",\n            \"image\": \"togather-ml/spark-batch-pipeline:latest\"\
+          ,\n            \"imagePullPolicy\": \"IfNotPresent\",\n            \"mainApplicationFile\"\
+          : \"local:///opt/spark/work-dir/src/batch/batch_feature_job.py\",\n    \
+          \        \"arguments\": [\n                \"--target-date\",\n        \
+          \        target_date,\n                \"--mode\",\n                mode,\n\
+          \            ],\n            \"sparkVersion\": \"3.5.0\",\n            #\
+          \ S3A/MinIO configuration - credentials from K8s secrets via env vars\n\
+          \            \"sparkConf\": {\n                \"spark.hadoop.fs.s3a.endpoint\"\
+          : \"http://minio-0.minio.platform.svc.cluster.local:9000\",\n          \
+          \      \"spark.hadoop.fs.s3a.path.style.access\": \"true\",\n          \
+          \      \"spark.hadoop.fs.s3a.impl\": \"org.apache.hadoop.fs.s3a.S3AFileSystem\"\
+          ,\n                \"spark.hadoop.fs.s3a.connection.ssl.enabled\": \"false\"\
+          ,\n                # Use environment variables for credentials (injected\
+          \ from K8s secrets below)\n                \"spark.hadoop.fs.s3a.aws.credentials.provider\"\
+          : \"com.amazonaws.auth.EnvironmentVariableCredentialsProvider\",\n     \
+          \           # Event logging disabled due to hadoop-aws S3Guard compatibility\n\
+          \                \"spark.eventLog.enabled\": \"false\",\n            },\n\
+          \            \"restartPolicy\": {\n                \"type\": \"OnFailure\"\
+          ,\n                \"onFailureRetries\": 3,\n                \"onFailureRetryInterval\"\
+          : 30,\n            },\n            \"driver\": {\n                \"cores\"\
+          : 1,\n                \"memory\": \"1g\",\n                \"serviceAccount\"\
+          : \"spark\",\n                \"env\": [\n                    {\n      \
+          \                  \"name\": \"AWS_ACCESS_KEY_ID\",\n                  \
+          \      \"valueFrom\": {\n                            \"secretKeyRef\": {\n\
+          \                                \"name\": \"spark-s3-credentials\",\n \
+          \                               \"key\": \"AWS_ACCESS_KEY_ID\",\n      \
+          \                      }\n                        },\n                 \
+          \   },\n                    {\n                        \"name\": \"AWS_SECRET_ACCESS_KEY\"\
+          ,\n                        \"valueFrom\": {\n                          \
+          \  \"secretKeyRef\": {\n                                \"name\": \"spark-s3-credentials\"\
+          ,\n                                \"key\": \"AWS_SECRET_ACCESS_KEY\",\n\
+          \                            }\n                        },\n           \
+          \         },\n                    {\n                        \"name\": \"\
+          MINIO_ENDPOINT_URL\",\n                        \"value\": \"http://minio-0.minio.platform.svc.cluster.local:9000\"\
+          ,\n                    },\n                    {\"name\": \"REDIS_HOST\"\
+          , \"value\": \"redis.platform.svc.cluster.local\"},\n                  \
+          \  {\"name\": \"REDIS_PORT\", \"value\": \"6379\"},\n                  \
+          \  {\n                        \"name\": \"REDIS_PASSWORD\",\n          \
+          \              \"valueFrom\": {\n                            \"secretKeyRef\"\
+          : {\n                                \"name\": \"redis-secret\",\n     \
+          \                           \"key\": \"REDIS_PASSWORD\",\n             \
+          \               }\n                        },\n                    },\n\
+          \                ],\n            },\n            \"executor\": {\n     \
+          \           \"cores\": 1,\n                \"memory\": \"2g\",\n       \
+          \         \"instances\": 2,\n                \"env\": [\n              \
+          \      {\n                        \"name\": \"AWS_ACCESS_KEY_ID\",\n   \
+          \                     \"valueFrom\": {\n                            \"secretKeyRef\"\
+          : {\n                                \"name\": \"spark-s3-credentials\"\
+          ,\n                                \"key\": \"AWS_ACCESS_KEY_ID\",\n   \
+          \                         }\n                        },\n              \
+          \      },\n                    {\n                        \"name\": \"AWS_SECRET_ACCESS_KEY\"\
+          ,\n                        \"valueFrom\": {\n                          \
+          \  \"secretKeyRef\": {\n                                \"name\": \"spark-s3-credentials\"\
+          ,\n                                \"key\": \"AWS_SECRET_ACCESS_KEY\",\n\
+          \                            }\n                        },\n           \
+          \         },\n                ],\n            },\n        },\n    }\n\n\
+          \    # Apply using Kubernetes API\n    api = client.CustomObjectsApi()\n\
+          \    try:\n        api.create_namespaced_custom_object(\n            group=\"\
+          sparkoperator.k8s.io\",\n            version=\"v1beta2\",\n            namespace=namespace,\n\
+          \            plural=\"sparkapplications\",\n            body=manifest,\n\
+          \        )\n        print(f\"Submitted SparkApplication: {job_name}\")\n\
+          \    except client.ApiException as e:\n        raise RuntimeError(f\"Failed\
+          \ to submit SparkApplication: {e}\")\n\n    return job_name\n\n"
+        image: python:3.10-slim
+    exec-validate-online-features:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - validate_online_features
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'redis' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef validate_online_features(\n    entity_type: str = \"user\",\n\
+          \    sample_size: int = 10,\n    redis_host: str = \"redis.platform.svc.cluster.local\"\
+          ,\n    redis_port: int = 6379,\n    redis_password: str = \"\",  # From\
+          \ K8s secret via Kubeflow UI or default empty\n) -> str:\n    \"\"\"\n \
+          \   Validate that features exist in Redis online store.\n    \"\"\"\n  \
+          \  import redis\n\n    client = redis.Redis(\n        host=redis_host,\n\
+          \        port=redis_port,\n        password=redis_password,\n        decode_responses=True,\n\
+          \    )\n\n    # Get sample keys\n    pattern = f\"feast:{entity_type}:*\"\
+          \n    keys = list(client.scan_iter(pattern, count=sample_size))\n\n    if\
+          \ not keys:\n        raise RuntimeError(f\"No features found in Redis for\
+          \ pattern: {pattern}\")\n\n    # Check first few keys\n    for key in keys[:5]:\n\
+          \        features = client.hgetall(key)\n        print(f\"Key: {key}, Features:\
+          \ {len(features)}\")\n        if not features:\n            raise RuntimeError(f\"\
+          Empty features for key: {key}\")\n\n    print(f\"Validated {len(keys)} feature\
+          \ keys for entity: {entity_type}\")\n    return \"VALIDATED\"\n\n"
+        image: python:3.10-slim
+    exec-validate-online-features-2:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - validate_online_features
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'redis' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef validate_online_features(\n    entity_type: str = \"user\",\n\
+          \    sample_size: int = 10,\n    redis_host: str = \"redis.platform.svc.cluster.local\"\
+          ,\n    redis_port: int = 6379,\n    redis_password: str = \"\",  # From\
+          \ K8s secret via Kubeflow UI or default empty\n) -> str:\n    \"\"\"\n \
+          \   Validate that features exist in Redis online store.\n    \"\"\"\n  \
+          \  import redis\n\n    client = redis.Redis(\n        host=redis_host,\n\
+          \        port=redis_port,\n        password=redis_password,\n        decode_responses=True,\n\
+          \    )\n\n    # Get sample keys\n    pattern = f\"feast:{entity_type}:*\"\
+          \n    keys = list(client.scan_iter(pattern, count=sample_size))\n\n    if\
+          \ not keys:\n        raise RuntimeError(f\"No features found in Redis for\
+          \ pattern: {pattern}\")\n\n    # Check first few keys\n    for key in keys[:5]:\n\
+          \        features = client.hgetall(key)\n        print(f\"Key: {key}, Features:\
+          \ {len(features)}\")\n        if not features:\n            raise RuntimeError(f\"\
+          Empty features for key: {key}\")\n\n    print(f\"Validated {len(keys)} feature\
+          \ keys for entity: {entity_type}\")\n    return \"VALIDATED\"\n\n"
+        image: python:3.10-slim
+    exec-wait-for-spark-job:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - wait_for_spark_job
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'kubernetes'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef wait_for_spark_job(\n    job_name: str,\n    namespace: str =\
+          \ \"default\",  # Spark operator watches 'default'\n    timeout_minutes:\
+          \ int = 60,\n) -> str:\n    \"\"\"\n    Wait for SparkApplication to complete.\n\
+          \n    Returns final status (COMPLETED, FAILED).\n    \"\"\"\n    import\
+          \ time\n\n    from kubernetes import client, config\n\n    # Load in-cluster\
+          \ config\n    config.load_incluster_config()\n    api = client.CustomObjectsApi()\n\
+          \n    start_time = time.time()\n    timeout_seconds = timeout_minutes *\
+          \ 60\n\n    while True:\n        # Check elapsed time\n        elapsed =\
+          \ time.time() - start_time\n        if elapsed > timeout_seconds:\n    \
+          \        raise TimeoutError(\n                f\"Spark job {job_name} timed\
+          \ out after {timeout_minutes} minutes\"\n            )\n\n        # Get\
+          \ SparkApplication status\n        try:\n            spark_app = api.get_namespaced_custom_object(\n\
+          \                group=\"sparkoperator.k8s.io\",\n                version=\"\
+          v1beta2\",\n                namespace=namespace,\n                plural=\"\
+          sparkapplications\",\n                name=job_name,\n            )\n  \
+          \          status = (\n                spark_app.get(\"status\", {})\n \
+          \               .get(\"applicationState\", {})\n                .get(\"\
+          state\", \"UNKNOWN\")\n            )\n            print(f\"Job {job_name}\
+          \ status: {status}\")\n\n            if status == \"COMPLETED\":\n     \
+          \           return \"COMPLETED\"\n            elif status == \"FAILED\"\
+          :\n                error_msg = (\n                    spark_app.get(\"status\"\
+          , {})\n                    .get(\"applicationState\", {})\n            \
+          \        .get(\"errorMessage\", \"Unknown error\")\n                )\n\
+          \                raise RuntimeError(f\"Spark job failed: {error_msg}\")\n\
+          \n        except client.ApiException as e:\n            print(f\"Error getting\
+          \ job status: {e}\")\n\n        # Wait before next check\n        time.sleep(30)\n\
+          \n"
+        image: python:3.10-slim
+pipelineInfo:
+  description: Compute batch features from raw events and write to offline/online
+    stores
+  name: batch-feature-pipeline
+root:
+  dag:
+    tasks:
+      submit-spark-job:
+        cachingOptions: {}
+        componentRef:
+          name: comp-submit-spark-job
+        inputs:
+          parameters:
+            mode:
+              componentInputParameter: mode
+            target_date:
+              componentInputParameter: target_date
+        taskInfo:
+          name: submit-spark-job
+      validate-online-features:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-validate-online-features
+        dependentTasks:
+        - wait-for-spark-job
+        inputs:
+          parameters:
+            entity_type:
+              runtimeValue:
+                constant: user
+        taskInfo:
+          name: validate-online-features
+      validate-online-features-2:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-validate-online-features-2
+        dependentTasks:
+        - wait-for-spark-job
+        inputs:
+          parameters:
+            entity_type:
+              runtimeValue:
+                constant: experience
+        taskInfo:
+          name: validate-online-features-2
+      wait-for-spark-job:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-wait-for-spark-job
+        dependentTasks:
+        - submit-spark-job
+        inputs:
+          parameters:
+            job_name:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: submit-spark-job
+        taskInfo:
+          name: wait-for-spark-job
+  inputDefinitions:
+    parameters:
+      mode:
+        defaultValue: incremental
+        description: Processing mode (incremental or full)
+        isOptional: true
+        parameterType: STRING
+      target_date:
+        defaultValue: ''
+        description: Date for feature computation (YYYY-MM-DD). Defaults to yesterday.
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.7.0

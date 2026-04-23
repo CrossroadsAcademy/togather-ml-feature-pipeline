@@ -143,6 +143,37 @@ class StorageSink:
             self.logger.error(f"Failed to initialize storage client: {e}")
             raise
 
+    def is_healthy(self) -> tuple[bool, str]:
+        """
+        Check if MinIO/S3 connection is healthy. Used by health check server.
+
+        Returns:
+            Tuple of (is_healthy, message)
+        """
+        try:
+            if not self._client:
+                return False, "Client not initialized"
+
+            # Check if bucket exists and is accessible
+            if not self._client.bucket_exists(self.config.bucket_name):
+                return False, f"Bucket '{self.config.bucket_name}' not found"
+
+            # List objects to verify read access (limit to 1)
+            objects_iter = self._client.list_objects(self.config.bucket_name)
+            # Just check if we can iterate (don't need to fetch all)
+            next(iter(objects_iter), None)
+
+            # Get buffer stats
+            total_buffered = sum(len(buf) for buf in self._buffer.values())
+            buffer_info = f", buffered: {total_buffered} records" if total_buffered > 0 else ""
+
+            return True, f"Bucket '{self.config.bucket_name}' accessible{buffer_info}"
+
+        except S3Error as e:
+            return False, f"S3 error: {e.code} - {e.message}"
+        except Exception as e:
+            return False, str(e)
+
     def _get_partition_path(
         self,
         event_type: str,
@@ -189,11 +220,18 @@ class StorageSink:
         return f"part-{timestamp}-{unique_id}{compression_suffix}.parquet"
 
     def _convert_to_arrow_table(self, records: list[dict[str, Any]]) -> pa.Table:
-        """Convert list of records to Arrow table."""
+        """Convert list of records to Arrow table.
+
+        Handles nested structures:
+        - Dicts are flattened with prefix (device_context.platform -> device_context_platform)
+        - Lists/arrays are serialized as JSON strings (recommendations -> JSON array string)
+        """
+        import json
+
         if not records:
             return pa.table({})
 
-        # Flatten nested dicts for Parquet compatibility
+        # Flatten nested dicts and serialize arrays for Parquet compatibility
         flat_records = []
         for record in records:
             flat = {}
@@ -202,6 +240,9 @@ class StorageSink:
                     # Flatten nested dict with prefix
                     for nested_key, nested_value in value.items():
                         flat[f"{key}_{nested_key}"] = nested_value
+                elif isinstance(value, list):
+                    # Serialize arrays as JSON strings to preserve them
+                    flat[key] = json.dumps(value)
                 else:
                     flat[key] = value
             flat_records.append(flat)
@@ -429,7 +470,12 @@ class DataArchiver:
         # Process in batches
         for i in range(0, len(messages), self.batch_size):
             batch = messages[i : i + self.batch_size]
-            key = self.sink.write_batch(batch, event_type)
+
+            # Extract event timestamp from first message for partitioning
+            # Use event time (not processing time) so historical replays go to correct partitions
+            event_timestamp = self._extract_event_timestamp(batch[0]) if batch else None
+
+            key = self.sink.write_batch(batch, event_type, timestamp=event_timestamp)
             if key:
                 keys.append(key)
 
@@ -440,6 +486,39 @@ class DataArchiver:
         )
 
         return keys
+
+    def _extract_event_timestamp(self, message: dict[str, Any]) -> datetime | None:
+        """Extract event timestamp from message for partitioning by event time."""
+        from datetime import datetime, timezone
+
+        # Try SDK envelope timestamp first (milliseconds)
+        ts = message.get("_timestamp")
+        if ts:
+            try:
+                return datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+            except (ValueError, TypeError, OSError):
+                pass
+
+        # Try common timestamp fields (camelCase from SDK)
+        for field in ["clientTimestamp", "createdAt", "servedAt", "timestamp"]:
+            ts = message.get(field)
+            if ts:
+                try:
+                    # Timestamps are typically in milliseconds
+                    return datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+                except (ValueError, TypeError, OSError):
+                    pass
+
+        # Try processed_at (ISO string from app-events-processor)
+        processed_at = message.get("processed_at")
+        if processed_at and isinstance(processed_at, str):
+            try:
+                return datetime.fromisoformat(processed_at.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        # Fallback to now (shouldn't happen with proper events)
+        return None
 
 
 # Backward Compatibility Aliases
@@ -473,22 +552,3 @@ if __name__ == "__main__":
     )
 
     sink = StorageSink(config)
-
-    # Example: Write batch of events
-    events = [
-        {
-            "event_id": "e1",
-            "user_id": "u1",
-            "event_type": "user_click",
-            "item_id": "i1",
-        },
-        {
-            "event_id": "e2",
-            "user_id": "u2",
-            "event_type": "user_click",
-            "item_id": "i2",
-        },
-    ]
-
-    object_key = sink.write_batch(events, event_type="user_click")
-    print(f"Written to: {object_key}")
