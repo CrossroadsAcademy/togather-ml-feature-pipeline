@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+scripts/test_flink_session_job.py
+k8s/spark-s3-credentials.yaml
+scripts/test_real_feature_pipeline.py
+scripts/test_feature_pipeline.py
+
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+.env
+.env.example
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data and logs (keep .gitkeep)
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Spark
+spark-warehouse/
+derby.log
+metastore_db/
+
+# Flink
+checkpoints/
+savepoints/
+
+# Build artifacts
+*.tar
+*.zip
+
+#test
+scripts/demo_test.py
+
+#Example test scripts
+examples/

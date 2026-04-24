@@ -1,0 +1,48 @@
+# Pre-commit hooks
+# Install: poetry run pre-commit install
+# Run manually: poetry run pre-commit run --all-files
+
+repos:
+  # General file sanity checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+      - id: end-of-file-fixer
+        name: Fix end of files
+      - id: check-yaml
+        name: Check YAML syntax
+        args: ["--allow-multiple-documents"]
+      - id: check-added-large-files
+        name: Prevent large files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+      - id: check-toml
+        name: Check TOML syntax
+      - id: debug-statements
+        name: Check for debugger statements
+
+  # Python formatting & linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.14
+    hooks:
+      # Linting
+      - id: ruff
+        name: Lint with Ruff
+        args: ["--fix"]
+
+      # Formatting
+      - id: ruff-format
+        name: Format code with Ruff
+
+  # Commit message linting
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.15.0
+    hooks:
+      - id: commitlint
+        name: Check commit message format
+        stages: [commit-msg]
+        additional_dependencies:
+          - "@commitlint/config-conventional"

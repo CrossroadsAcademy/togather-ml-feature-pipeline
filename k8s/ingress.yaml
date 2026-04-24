@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: feature-pipeline-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ml.togather.local
+      http:
+        paths:
+          - path: /features(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: feature-pipeline
+                port:
+                  number: 8000

@@ -1,0 +1,131 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: batch-feature-job
+  namespace: stream-processing
+  labels:
+    app: batch-feature-job
+    component: ml-pipeline
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: "togather-ml/spark-batch-pipeline"
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: "local:///opt/spark/work-dir/src/batch/batch_feature_job.py"
+
+  arguments:
+    - "--target-date"
+    - "{{ .Values.targetDate | default \"2024-12-15\" }}"
+    - "--mode"
+    - "{{ .Values.mode | default \"incremental\" }}"
+
+  sparkVersion: "3.5.0"
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 3
+    onFailureRetryInterval: 30
+    onSubmissionFailureRetries: 3
+    onSubmissionFailureRetryInterval: 30
+
+  # Spark configuration
+  sparkConf:
+    # S3A/MinIO Configuration
+    spark.hadoop.fs.s3a.endpoint: "http://minio.platform.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+
+    # Parquet optimization
+    spark.sql.parquet.mergeSchema: "true"
+    spark.sql.parquet.filterPushdown: "true"
+    spark.sql.parquet.compression.codec: "snappy"
+    spark.sql.sources.partitionOverwriteMode: "dynamic"
+
+    # Adaptive query execution
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+
+    # Prometheus metrics
+    spark.ui.prometheus.enabled: "true"
+    spark.metrics.namespace: "batch_feature"
+
+    # Event logging for History Server
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://spark-events/"
+    spark.eventLog.compress: "true"
+
+  # Driver configuration
+  driver:
+    cores: 1
+    coreLimit: "1200m"
+    memory: "1g"
+    serviceAccount: spark
+    labels:
+      app: batch-feature-job
+      component: driver
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "4040"
+      prometheus.io/path: "/metrics/prometheus"
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_SECRET_ACCESS_KEY
+      - name: MINIO_ENDPOINT_URL
+        value: "minio.platform.svc.cluster.local:9000"
+      - name: REDIS_HOST
+        value: "redis.platform.svc.cluster.local"
+      - name: REDIS_PORT
+        value: "6379"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://alloy.observability.svc.cluster.local:4317"
+      - name: OTEL_SERVICE_NAME
+        value: "batch-feature-pipeline"
+      - name: APP_ENV
+        value: "production"
+
+  # Executor configuration
+  executor:
+    cores: 1
+    coreLimit: "1200m"
+    memory: "2g"
+    instances: 2
+    labels:
+      app: batch-feature-job
+      component: executor
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "4040"
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: spark-s3-credentials
+            key: AWS_SECRET_ACCESS_KEY
+
+  # Dependencies
+  deps:
+    jars:
+      - "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar"
+      - "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar"
+
+  # Monitoring
+  monitoring:
+    exposeDriverMetrics: true
+    exposeExecutorMetrics: true
+    prometheus:
+      jmxExporterJar: "/prometheus/jmx_prometheus_javaagent.jar"
+      port: 8090

@@ -1,0 +1,13 @@
+[core]
+    remote = minio
+    autostage = true
+
+[cache]
+    type = copy
+
+# All settings loaded from environment variables:
+# DVC_REMOTE_MINIO_ENDPOINTURL - MinIO endpoint (e.g., http://minio.platform:9000)
+# AWS_ACCESS_KEY_ID - Access key
+# AWS_SECRET_ACCESS_KEY - Secret key
+['remote "minio"']
+    url = s3://dvc-data

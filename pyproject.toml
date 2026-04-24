@@ -1,0 +1,177 @@
+[tool.poetry]
+name = "togather-ml-feature-pipeline"
+version = "0.1.0"
+description = "Feature engineering pipeline (batch + streaming) for ToGather RecSys"
+authors = ["ToGather ML Team"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+kafka-python = "^2.2.15"
+feast = "^0.37.0"
+s3fs = ">=2023.1.0"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+# Monitoring & Observability
+prometheus-client = "^0.19.0"
+prometheus-fastapi-instrumentator = "^7.0.0"
+opentelemetry-api = "^1.20.0"
+opentelemetry-sdk = "^1.20.0"
+opentelemetry-instrumentation-fastapi = "^0.41b0"
+opentelemetry-exporter-otlp = "^1.20.0"
+pyroscope-io = "^0.8.7"
+# Data Version Control for dataset versioning
+dvc = {extras = ["s3"], version = "^3.55.0"}
+
+[tool.poetry.group.jvm.dependencies]
+# Web framework
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+# Data processing
+pyspark = "^3.5.0"
+apache-flink = "^2.0.0"
+pandas = "^2.1.0"
+pyarrow = "^15.0.0"
+# Streaming
+kafka-python = "^2.0.2"
+# Storage
+redis = "^5.0.0"
+boto3 = "^1.34.0"
+minio = "^7.2.0"
+
+# Schema Registry & Protobuf
+confluent-kafka = "^2.3.0"
+protobuf = "^4.24.0"  # Updated for Feast compatibility
+
+# Config & validation
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+python-dotenv = "^1.0.0"
+# Utilities
+structlog = "^23.2.0"
+python-json-logger = "^2.0.7"
+
+
+# Retry & Circuit Breaker
+tenacity = "^8.2.3"
+
+[tool.poetry.group.dev.dependencies]
+# Testing
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+pytest-asyncio = "^0.21.0"
+pytest-mock = "^3.12.0"
+httpx = "^0.26.0"
+testcontainers = "^3.7.1"
+# Code quality
+black = "^23.12.0"
+ruff = ">=0.5.3"
+mypy = "1.19.0"
+# Git hooks
+pre-commit = "^3.6.0"
+# Development
+ipython = "^8.18.0"
+types-requests = "^2.32.4.20250913"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.mypy_cache
+  | \.pytest_cache
+  | \.venv
+  | _build
+  | build
+  | dist
+  | data
+  | logs
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+lint.select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+lint.ignore = [
+    "E501",  # line too long (handled by black)
+]
+
+# Auto-fix imports & style issues
+fix = true
+
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"tests/**/*.py" = ["S101"]  # Allow assert in tests
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false  # Start permissive, tighten later
+check_untyped_defs = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+
+
+[[tool.mypy.overrides]]
+module = ["pyspark.*", "pyflink.*", "kafka.*"]
+ignore_missing_imports = true
+
+
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = """
+    -ra
+    -q
+    --strict-markers
+    --cov=src
+    --cov-report=term-missing
+    --cov-report=html
+    --cov-report=xml
+"""
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "*/main.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+precision = 2
+show_missing = true
